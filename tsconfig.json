@@ -6,8 +6,10 @@
     "module": "ESNext",
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+    "jsx": "preserve",
+    "strict": true,
+    "moduleResolution": "bundler"
   },
-  "include": ["pages"],
-  "references": [{ "path": "./tsconfig.node.json" }]
+  "include": ["pages", "lib"]
 }

@@ -1,39 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Trash2, Plus, MoreVertical, LogOut } from 'lucide-react';
-
-// Firebase configuration - YOU NEED TO UPDATE THIS
-const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyC3xYYioK0hkhdyBMEqEQmyN80vXcCra6Y",
-  authDomain: "todolist-ed869.firebaseapp.com",
-  projectId: "todolist-ed869",
-  storageBucket: "todolist-ed869.firebasestorage.app",
-  messagingSenderId: "1016456500011",
-  appId: "1:1016456500011:web:8a4d70146501964a1e2b6e",
-  measurementId: "G-C4L9KTMJL7"
-};
-
-let db = null;
-let auth = null;
-let currentUser = null;
-
-// Initialize Firebase (this runs once)
-async function initializeFirebase() {
-  if (typeof window !== 'undefined' && !db) {
-    try {
-      const { initializeApp } = await import('https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js');
-      const { getFirestore } = await import('https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js');
-      const { getAuth } = await import('https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js');
-      
-      const app = initializeApp(FIREBASE_CONFIG);
-      db = getFirestore(app);
-      auth = getAuth(app);
-    } catch (error) {
-      console.error('Firebase not configured. Follow setup instructions.');
-    }
-  }
-}
-
-initializeFirebase();
+import { Trash2, Plus, MoreVertical } from 'lucide-react';
+import { db } from '../lib/firebase';
+import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, query, orderBy, serverTimestamp } from 'firebase/firestore';
 
 export default function TaskWidget() {
   const [tasks, setTasks] = useState([]);
@@ -42,7 +10,6 @@ export default function TaskWidget() {
   const [selectedTask, setSelectedTask] = useState(null);
   const [showDetails, setShowDetails] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [setupComplete, setSetupComplete] = useState(false);
 
   const urgencyColors = {
     red: 'Today',
@@ -60,25 +27,16 @@ export default function TaskWidget() {
   };
 
   useEffect(() => {
-    // Check if Firebase is properly configured
-    if (FIREBASE_CONFIG.apiKey === "YOUR_API_KEY") {
-      setLoading(false);
-      return;
-    }
-
     loadTasks();
   }, []);
 
   const loadTasks = async () => {
-    if (!db) return;
     try {
-      const { collection, getDocs, query, orderBy } = await import('https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js');
       const tasksRef = collection(db, 'tasks');
       const q = query(tasksRef, orderBy('position', 'asc'));
       const snapshot = await getDocs(q);
       const loadedTasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setTasks(loadedTasks);
-      setSetupComplete(true);
     } catch (error) {
       console.error('Error loading tasks:', error);
     } finally {
@@ -87,9 +45,7 @@ export default function TaskWidget() {
   };
 
   const addTask = async (title, description, urgency, importance) => {
-    if (!db) return;
     try {
-      const { collection, addDoc, serverTimestamp } = await import('https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js');
       const tasksRef = collection(db, 'tasks');
       await addDoc(tasksRef, {
         title,
@@ -108,9 +64,7 @@ export default function TaskWidget() {
   };
 
   const deleteTask = async (id) => {
-    if (!db) return;
     try {
-      const { doc, deleteDoc, updateDoc } = await import('https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js');
       const task = tasks.find(t => t.id === id);
       
       if (task?.completed) {
@@ -125,9 +79,7 @@ export default function TaskWidget() {
   };
 
   const restoreTask = async (id) => {
-    if (!db) return;
     try {
-      const { doc, updateDoc } = await import('https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js');
       await updateDoc(doc(db, 'tasks', id), { completed: false });
       await loadTasks();
     } catch (error) {
@@ -146,10 +98,7 @@ export default function TaskWidget() {
       [activeTasks[idx], activeTasks[idx + 1]] = [activeTasks[idx + 1], activeTasks[idx]];
     }
 
-    // Update positions in database
-    if (!db) return;
     try {
-      const { doc, updateDoc } = await import('https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js');
       for (let i = 0; i < activeTasks.length; i++) {
         await updateDoc(doc(db, 'tasks', activeTasks[i].id), { position: i });
       }
@@ -180,16 +129,12 @@ export default function TaskWidget() {
       [activeTasks[dragIdx], activeTasks[targetIdx]] = [activeTasks[targetIdx], activeTasks[dragIdx]];
       setTasks([...activeTasks, ...completedTasks]);
       
-      // Update positions in database
-      if (db) {
-        try {
-          const { doc, updateDoc } = await import('https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js');
-          for (let i = 0; i < activeTasks.length; i++) {
-            await updateDoc(doc(db, 'tasks', activeTasks[i].id), { position: i });
-          }
-        } catch (error) {
-          console.error('Error updating positions:', error);
+      try {
+        for (let i = 0; i < activeTasks.length; i++) {
+          await updateDoc(doc(db, 'tasks', activeTasks[i].id), { position: i });
         }
+      } catch (error) {
+        console.error('Error updating positions:', error);
       }
     }
     setDraggedTask(null);
@@ -221,27 +166,6 @@ export default function TaskWidget() {
     return (
       <div className="w-full max-w-md mx-auto p-4 bg-gradient-to-br from-slate-50 to-slate-100 rounded-lg shadow-lg">
         <p className="text-center text-slate-600">Loading...</p>
-      </div>
-    );
-  }
-
-  if (!setupComplete) {
-    return (
-      <div className="w-full max-w-md mx-auto p-6 bg-gradient-to-br from-slate-50 to-slate-100 rounded-lg shadow-lg">
-        <h1 className="text-2xl font-bold text-slate-800 mb-4">Firebase Setup Required</h1>
-        <div className="bg-yellow-50 border-2 border-yellow-300 rounded-lg p-4 text-sm text-slate-700">
-          <p className="font-semibold mb-2">Follow these steps:</p>
-          <ol className="list-decimal list-inside space-y-2">
-            <li>Go to <a href="https://firebase.google.com" target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">firebase.google.com</a></li>
-            <li>Create a new project or use existing one</li>
-            <li>Go to Project Settings → General tab</li>
-            <li>Scroll to "Your apps" → Click Web icon ()</li>
-            <li>Copy your config object</li>
-            <li>Replace the FIREBASE_CONFIG object in the code with your config</li>
-            <li>Create a Firestore database (Cloud Firestore)</li>
-            <li>Start in test mode, then refresh this page</li>
-          </ol>
-        </div>
       </div>
     );
   }
