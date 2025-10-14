@@ -3,11 +3,22 @@ import { Trash2, Plus, MoreVertical } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, query, orderBy, serverTimestamp } from 'firebase/firestore';
 
+interface Task {
+  id: string;
+  title: string;
+  description: string;
+  urgency: string;
+  importance: string;
+  completed: boolean;
+  position: number;
+  createdAt?: any;
+}
+
 export default function TaskWidget() {
-  const [tasks, setTasks] = useState([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [showNewTask, setShowNewTask] = useState(false);
-  const [draggedTask, setDraggedTask] = useState(null);
-  const [selectedTask, setSelectedTask] = useState(null);
+  const [draggedTask, setDraggedTask] = useState<Task | null>(null);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [loading, setLoading] = useState(true);
 
