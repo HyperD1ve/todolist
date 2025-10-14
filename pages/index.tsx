@@ -2,14 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { Trash2, Plus, MoreVertical, LogOut } from 'lucide-react';
 
 // Firebase configuration - YOU NEED TO UPDATE THIS
-const firebaseConfig = {
-  apiKey: "AIzaSyC3xYYioK0hkhdyBMEqEQmyN80vXcCra6Y",
-  authDomain: "todolist-ed869.firebaseapp.com",
-  projectId: "todolist-ed869",
-  storageBucket: "todolist-ed869.firebasestorage.app",
-  messagingSenderId: "1016456500011",
-  appId: "1:1016456500011:web:8a4d70146501964a1e2b6e",
-  measurementId: "G-C4L9KTMJL7"
+const FIREBASE_CONFIG = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT_ID.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
 };
 
 let db = null;
