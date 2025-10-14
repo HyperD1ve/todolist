@@ -46,7 +46,7 @@ export default function TaskWidget() {
       const tasksRef = collection(db, 'tasks');
       const q = query(tasksRef, orderBy('position', 'asc'));
       const snapshot = await getDocs(q);
-      const loadedTasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const loadedTasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Task));;
       setTasks(loadedTasks);
     } catch (error) {
       console.error('Error loading tasks:', error);
@@ -297,7 +297,7 @@ function NewTaskForm({ onAdd, onCancel, colors, importanceColors }) {
         <div className="mb-4">
           <label className="block text-sm font-semibold mb-2">Urgency</label>
           <select value={urgency} onChange={(e) => setUrgency(e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-            {Object.entries(colors).map(([key, val]) => (
+            {Object.entries(colors).map(([key, val]: [string, string]) => (
               <option key={key} value={key}>{val}</option>
             ))}
           </select>
@@ -305,7 +305,7 @@ function NewTaskForm({ onAdd, onCancel, colors, importanceColors }) {
         <div className="mb-4">
           <label className="block text-sm font-semibold mb-2">Importance</label>
           <select value={importance} onChange={(e) => setImportance(e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-            {Object.entries(importanceColors).map(([key, val]) => (
+            {Object.entries(importanceColors).map(([key, val]: [string, string]) => (
               <option key={key} value={key}>{val}</option>
             ))}
           </select>

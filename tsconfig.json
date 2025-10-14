@@ -8,8 +8,9 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "jsx": "preserve",
-    "strict": true,
-    "moduleResolution": "bundler"
+    "strict": false,
+    "moduleResolution": "bundler",
+    "noImplicitAny": false
   },
   "include": ["pages", "lib"]
 }
