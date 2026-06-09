@@ -7,19 +7,26 @@ interface Props {
   onClear: () => void;
 }
 
-// Deterministic-ish scatter so balls keep their spot between renders.
-function scatter(i: number) {
-  const cols = 4;
-  const col = i % cols;
-  const row = Math.floor(i / cols);
-  const jitterX = ((i * 53) % 40) - 20;
-  const jitterY = ((i * 31) % 36) - 18;
-  return {
-    left: `${18 + col * 18}%`,
-    top: `${24 + row * 20}%`,
-    x: jitterX,
-    y: jitterY,
-  };
+// Stable pseudo-random in [0,1) seeded by a string (so balls keep their spot).
+function rand01(seed: string) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) / 4294967296;
+}
+
+// Scatter a ball at a random point inside the bin's circular opening, centred
+// on screen. sqrt() keeps the distribution uniform across the disc.
+function scatter(id: string) {
+  const vmin =
+    typeof window !== "undefined"
+      ? Math.min(window.innerWidth, window.innerHeight)
+      : 800;
+  const angle = rand01(id) * Math.PI * 2;
+  const radius = Math.sqrt(rand01(id + "#r")) * vmin * 0.3;
+  return { dx: Math.cos(angle) * radius, dy: Math.sin(angle) * radius };
 }
 
 // The uncrumpled contents, narrowed per paper kind.
@@ -108,9 +115,9 @@ function BallView({ ball, pos }: { ball: Paper; pos: ReturnType<typeof scatter> 
       className="no-select"
       style={{
         position: "absolute",
-        left: pos.left,
-        top: pos.top,
-        transform: `translate(${pos.x}px, ${pos.y}px)`,
+        left: "50%",
+        top: "50%",
+        transform: `translate(calc(-50% + ${pos.dx}px), calc(-50% + ${pos.dy}px))`,
         width: 90,
         height: 90,
         cursor: "grab",
@@ -152,8 +159,8 @@ export default function BinScreen({ balls, onLeave, onClear }: Props) {
         backgroundRepeat: "no-repeat",
       }}
     >
-      {balls.map((b, i) => (
-        <BallView key={b.id} ball={b} pos={scatter(i)} />
+      {balls.map((b) => (
+        <BallView key={b.id} ball={b} pos={scatter(b.id)} />
       ))}
 
       <div style={{ position: "fixed", top: 20, left: 20, display: "flex", gap: 12 }}>

@@ -38,10 +38,11 @@ function viewport() {
   };
 }
 
-// The bin's catch area, bottom-left (mirrors PaperBin's placement).
+// The bin's catch area, bottom-left (mirrors PaperBin's placement; generous so
+// a ball passing through the bin image reliably counts).
 function binHit(cx: number, cy: number) {
   const { h } = viewport();
-  return cx >= 10 && cx <= 205 && cy >= h - 210;
+  return cx >= -20 && cx <= 240 && cy >= h - 200;
 }
 
 function offscreen(x: number, y: number) {
@@ -78,10 +79,13 @@ export function useDragPhysics(opts: Opts) {
     active: false,
   });
 
-  // Thrown-ball state.
+  // Thrown-ball state. x/y are the live position (the source of truth during
+  // flight — we can't read it back from the async setPos updater).
   const ball = useRef({
     mode: false, // this paper is currently a ball
     held: false, // grabbed by the pointer
+    x: 0,
+    y: 0,
     vx: 0,
     vy: 0,
     spin: 0,
@@ -180,24 +184,19 @@ export function useDragPhysics(opts: Opts) {
 
     b.vy += BALL_GRAVITY * dt;
     b.spin += b.vx * dt * 0.004;
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    setPos({ x: b.x, y: b.y });
     setTransform(`rotate(${b.spin}rad)`);
 
-    let nx = 0;
-    let ny = 0;
-    setPos((p) => {
-      nx = p.x + b.vx * dt;
-      ny = p.y + b.vy * dt;
-      return { x: nx, y: ny };
-    });
-
-    const cx = nx + BALL_SIZE / 2;
-    const cy = ny + BALL_SIZE / 2;
+    const cx = b.x + BALL_SIZE / 2;
+    const cy = b.y + BALL_SIZE / 2;
     if (binHit(cx, cy)) {
       stopBallLoop();
       cb.current.onLand(id, true);
       return;
     }
-    if (offscreen(nx, ny)) {
+    if (offscreen(b.x, b.y)) {
       stopBallLoop();
       cb.current.onLand(id, false);
       return;
@@ -268,6 +267,8 @@ export function useDragPhysics(opts: Opts) {
     b.vx = 0;
     b.vy = 0;
     b.spin = 0;
+    b.x = pos.x;
+    b.y = pos.y;
     b.samples = [];
     stopBallLoop();
     cb.current.bringToFront(id);
@@ -278,9 +279,11 @@ export function useDragPhysics(opts: Opts) {
     const board = boardRef.current?.getBoundingClientRect();
     const px = clientX - (board?.left ?? 0) - BALL_SIZE / 2;
     const py = clientY - (board?.top ?? 0) - BALL_SIZE / 2;
-    const s = ball.current.samples;
-    s.push({ x: px, y: py, t });
-    if (s.length > 8) s.shift();
+    const b = ball.current;
+    b.x = px;
+    b.y = py;
+    b.samples.push({ x: px, y: py, t });
+    if (b.samples.length > 8) b.samples.shift();
     setPos({ x: px, y: py });
   };
 
