@@ -1,8 +1,8 @@
 import React, { useState } from "react";
-import { Receipt } from "../lib/types";
+import { Paper, RECEIPT_WIDTH, MEMO_COLORS } from "../lib/types";
 
 interface Props {
-  balls: Receipt[];
+  balls: Paper[];
   onLeave: () => void;
   onClear: () => void;
 }
@@ -22,7 +22,86 @@ function scatter(i: number) {
   };
 }
 
-function BallView({ ball, pos }: { ball: Receipt; pos: ReturnType<typeof scatter> }) {
+// The uncrumpled contents, narrowed per paper kind.
+function Preview({ ball }: { ball: Paper }) {
+  if (ball.kind === "receipt") {
+    return (
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: "50%",
+          transform: "translate(-50%, -50%)",
+          width: RECEIPT_WIDTH,
+          height: ball.height,
+          overflow: "auto",
+          padding: "22px 18px",
+          backgroundImage: `url(/assets/${ball.bg}.jpg)`,
+          backgroundSize: `${ball.bgScale * 100}% auto`,
+          backgroundPosition: `${ball.bgX}% ${ball.bgY}%`,
+          backgroundRepeat: "no-repeat",
+          fontFamily: '"Courier New", Courier, monospace',
+          fontSize: 19,
+          lineHeight: "1.5",
+          color: "#222",
+          boxShadow: "2px 6px 14px rgba(0,0,0,0.6)",
+          zIndex: 20,
+        }}
+      >
+        {ball.items.length === 0 ? (
+          <span style={{ opacity: 0.5 }}>(blank)</span>
+        ) : (
+          ball.items.map((it, i) => (
+            <div
+              key={i}
+              style={{
+                marginLeft: it.level * 18,
+                fontWeight: it.isTitle ? 700 : 400,
+                textDecoration: [
+                  it.isTitle ? "underline" : "",
+                  it.struck ? "line-through" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" "),
+                opacity: it.struck ? 0.55 : 1,
+              }}
+            >
+              {it.isTitle ? it.text : `• ${it.text}`}
+            </div>
+          ))
+        )}
+      </div>
+    );
+  }
+  // memo
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: "50%",
+        top: "50%",
+        transform: "translate(-50%, -50%)",
+        width: ball.size,
+        height: ball.size,
+        overflow: "hidden",
+        padding: 12,
+        background: MEMO_COLORS[ball.color],
+        fontFamily: '"Courier New", Courier, monospace',
+        fontSize: 32,
+        lineHeight: 1.35,
+        color: "#222",
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+        boxShadow: "2px 6px 14px rgba(0,0,0,0.6)",
+        zIndex: 20,
+      }}
+    >
+      {ball.text || <span style={{ opacity: 0.5 }}>(blank)</span>}
+    </div>
+  );
+}
+
+function BallView({ ball, pos }: { ball: Paper; pos: ReturnType<typeof scatter> }) {
   const [open, setOpen] = useState(false);
   return (
     <div
@@ -46,38 +125,7 @@ function BallView({ ball, pos }: { ball: Receipt; pos: ReturnType<typeof scatter
       title="Hold to uncrumple"
     >
       {open ? (
-        <div
-          style={{
-            width: 150,
-            maxHeight: 220,
-            overflow: "auto",
-            transform: "translate(-30px, -60px)",
-            padding: "14px 12px",
-            backgroundImage: `url(/assets/${ball.bg}.jpg)`,
-            backgroundSize: "100% 100%",
-            fontFamily: '"Courier New", Courier, monospace',
-            fontSize: 11,
-            color: "#222",
-            boxShadow: "2px 6px 10px rgba(0,0,0,0.5)",
-          }}
-        >
-          {ball.items.length === 0 ? (
-            <span style={{ opacity: 0.5 }}>(blank)</span>
-          ) : (
-            ball.items.map((it, i) => (
-              <div
-                key={i}
-                style={{
-                  marginLeft: it.level * 12,
-                  fontWeight: it.isTitle ? 700 : 400,
-                  textDecoration: it.isTitle ? "underline" : "none",
-                }}
-              >
-                {it.isTitle ? it.text : `• ${it.text}`}
-              </div>
-            ))
-          )}
-        </div>
+        <Preview ball={ball} />
       ) : (
         <img
           src={`/assets/${ball.ball}.png`}

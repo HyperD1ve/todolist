@@ -1,18 +1,25 @@
-import React, { useRef, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import Head from "next/head";
 import { usePapers } from "../lib/usePapers";
 import {
   BallVariant,
   BgVariant,
+  MemoColor,
+  Memo as MemoT,
   Receipt as ReceiptT,
   RECEIPT_MAX_HEIGHT,
   RECEIPT_MIN_HEIGHT,
   RECEIPT_WIDTH,
+  MEMO_SIZE,
 } from "../lib/types";
 import Receipt from "../components/Receipt";
+import Memo from "../components/Memo";
 import ReceiptPrinter from "../components/ReceiptPrinter";
 import PaperBin from "../components/PaperBin";
+import PostItBoard from "../components/PostItBoard";
 import BinScreen from "../components/BinScreen";
+import Confetti from "../components/Confetti";
+import { FOCUS_Z } from "../lib/focus";
 
 function pick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
@@ -26,32 +33,27 @@ function newId(): string {
 }
 
 export default function Home() {
-  const {
-    receipts,
-    loaded,
-    addReceipt,
-    updateReceipt,
-    removeReceipt,
-    clearCrumpled,
-  } = usePapers();
+  const { papers, loaded, addPaper, updatePaper, clearCrumpled } = usePapers();
 
   const [view, setView] = useState<"board" | "bin">("board");
   const [editingId, setEditingId] = useState<string | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
   const zCounter = useRef(1);
 
-  const onBoard = receipts.filter((r) => !r.crumpled);
-  const balls = receipts.filter((r) => r.crumpled);
+  const onBoard = papers.filter((p) => !p.crumpled);
+  const balls = papers.filter((p) => p.crumpled);
 
-  // Keep the z-counter ahead of any persisted stacking values.
-  const maxZ = onBoard.reduce((m, r) => Math.max(m, r.z), 0);
+  const maxZ = onBoard.reduce((m, p) => Math.max(m, p.z), 0);
   if (maxZ >= zCounter.current) zCounter.current = maxZ + 1;
 
-  const bringToFront = (id: string): number => {
-    const z = ++zCounter.current;
-    updateReceipt(id, { z }, true);
-    return z;
-  };
+  const bringToFront = useCallback(
+    (id: string): number => {
+      const z = ++zCounter.current;
+      updatePaper(id, { z }, true);
+      return z;
+    },
+    [updatePaper]
+  );
 
   const printReceipt = () => {
     const board = boardRef.current?.getBoundingClientRect();
@@ -64,6 +66,9 @@ export default function Home() {
       id: newId(),
       kind: "receipt",
       bg: pick<BgVariant>(["crumpled1", "crumpled2"]),
+      bgScale: 1.1 + Math.random() * 1.2,
+      bgX: Math.round(Math.random() * 100),
+      bgY: Math.round(Math.random() * 100),
       height:
         RECEIPT_MIN_HEIGHT +
         Math.round(Math.random() * (RECEIPT_MAX_HEIGHT - RECEIPT_MIN_HEIGHT)),
@@ -71,6 +76,7 @@ export default function Home() {
       y: 70 + Math.random() * 60,
       z: ++zCounter.current,
       pinned: false,
+      balled: false,
       crumpled: false,
       ball: pick<BallVariant>(["ball1", "ball2", "ball3"]),
       items: [],
@@ -78,14 +84,62 @@ export default function Home() {
       draftLevel: 0,
       createdAt: Date.now(),
     };
-    addReceipt(r);
+    addPaper(r);
     setEditingId(r.id);
   };
 
-  const crumple = (id: string) => {
-    setEditingId((cur) => (cur === id ? null : cur));
-    updateReceipt(id, { crumpled: true, pinned: false }, true);
+  const spawnMemo = (color: MemoColor) => {
+    const board = boardRef.current?.getBoundingClientRect();
+    const bw = board?.width ?? window.innerWidth;
+    const m: MemoT = {
+      id: newId(),
+      kind: "memo",
+      color,
+      size: MEMO_SIZE,
+      text: "",
+      strokes: [],
+      x: Math.max(40, bw / 2 - MEMO_SIZE / 2 + (Math.random() * 120 - 60)),
+      y: 90 + Math.random() * 60,
+      z: ++zCounter.current,
+      pinned: false,
+      balled: false,
+      crumpled: false,
+      ball: pick<BallVariant>(["ball1", "ball2", "ball3"]),
+      createdAt: Date.now(),
+    };
+    addPaper(m);
+    setEditingId(m.id);
   };
+
+  // Long-press crumples a paper into a ball that stays on the board.
+  const handleBall = useCallback(
+    (id: string) => {
+      setEditingId((cur) => (cur === id ? null : cur));
+      updatePaper(id, { balled: true, pinned: false }, true);
+    },
+    [updatePaper]
+  );
+
+  // A ball came to rest (in the bin, or off-screen — either way it's binned).
+  const burstId = useRef(0);
+  const [burst, setBurst] = useState<number | null>(null);
+  const handleLand = useCallback(
+    (id: string, hitBin: boolean) => {
+      updatePaper(id, { balled: false, crumpled: true }, true);
+      if (hitBin) {
+        burstId.current += 1;
+        const k = burstId.current;
+        setBurst(k);
+        setTimeout(() => setBurst((b) => (b === k ? null : b)), 1300);
+      }
+    },
+    [updatePaper]
+  );
+
+  const ballInPlay = onBoard.some((p) => p.balled);
+
+  const startEdit = useCallback((id: string) => setEditingId(id), []);
+  const stopEdit = useCallback(() => setEditingId(null), []);
 
   return (
     <>
@@ -94,11 +148,9 @@ export default function Home() {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
 
-      {/* The tackboard background fills the screen */}
       <div
         ref={boardRef}
         onPointerDown={(e) => {
-          // Clicking bare board dismisses the active editor.
           if (e.target === e.currentTarget) setEditingId(null);
         }}
         style={{
@@ -110,22 +162,60 @@ export default function Home() {
           overflow: "hidden",
         }}
       >
-        {onBoard.map((r) => (
-          <Receipt
-            key={r.id}
-            receipt={r}
-            editing={editingId === r.id}
-            boardRef={boardRef}
-            onStartEdit={(id) => setEditingId(id)}
-            onStopEdit={() => setEditingId(null)}
-            onUpdate={updateReceipt}
-            onCrumple={crumple}
-            bringToFront={bringToFront}
+        {onBoard.map((p) =>
+          p.kind === "receipt" ? (
+            <Receipt
+              key={p.id}
+              receipt={p}
+              editing={editingId === p.id}
+              boardRef={boardRef}
+              onStartEdit={startEdit}
+              onStopEdit={stopEdit}
+              onUpdate={updatePaper}
+              onBall={handleBall}
+              onLand={handleLand}
+              bringToFront={bringToFront}
+            />
+          ) : (
+            <Memo
+              key={p.id}
+              memo={p}
+              editing={editingId === p.id}
+              boardRef={boardRef}
+              onStartEdit={startEdit}
+              onStopEdit={stopEdit}
+              onUpdate={updatePaper}
+              onBall={handleBall}
+              onLand={handleLand}
+              bringToFront={bringToFront}
+            />
+          )
+        )}
+
+        {/* Blur backdrop while focusing one item; click it to leave edit mode */}
+        {editingId && (
+          <div
+            onPointerDown={stopEdit}
+            style={{
+              position: "absolute",
+              inset: 0,
+              zIndex: FOCUS_Z - 1,
+              background: "rgba(20,16,10,0.35)",
+              backdropFilter: "blur(6px)",
+              WebkitBackdropFilter: "blur(6px)",
+            }}
           />
-        ))}
+        )}
 
         <ReceiptPrinter onPrint={printReceipt} />
-        <PaperBin count={balls.length} onOpen={() => setView("bin")} />
+        <PostItBoard onPick={spawnMemo} />
+        <PaperBin
+          count={balls.length}
+          alert={ballInPlay}
+          onOpen={() => setView("bin")}
+        />
+
+        {burst && <Confetti key={burst} />}
 
         {!loaded && (
           <div

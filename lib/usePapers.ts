@@ -7,36 +7,88 @@ import {
   getDocs,
   setDoc,
 } from "firebase/firestore";
-import { Receipt } from "./types";
+import { Paper, Receipt, Memo } from "./types";
 
-const LS_KEY = "tackboard.receipts";
-const COLLECTION = "receipts";
+const LS_KEY = "tackboard.papers";
+const LS_KEY_OLD = "tackboard.receipts"; // pre-memo storage
+const COLLECTION = "papers";
+
+// ---- normalization ---------------------------------------------------------
+
+// Fill in fields that older saved papers may be missing so they render
+// correctly after a schema change.
+function normalize(r: any): Paper {
+  const base = {
+    id: r.id,
+    x: r.x ?? 60,
+    y: r.y ?? 60,
+    z: r.z ?? 1,
+    pinned: !!r.pinned,
+    balled: !!r.balled,
+    crumpled: !!r.crumpled,
+    ball: r.ball ?? "ball1",
+    createdAt: r.createdAt ?? 0,
+  };
+  if (r.kind === "memo") {
+    const m: Memo = {
+      ...base,
+      kind: "memo",
+      color: r.color ?? "red",
+      size: typeof r.size === "number" ? r.size : 210,
+      text: r.text ?? "",
+      strokes: Array.isArray(r.strokes) ? r.strokes : [],
+    };
+    return m;
+  }
+  const rec: Receipt = {
+    ...base,
+    kind: "receipt",
+    bg: r.bg ?? "crumpled1",
+    bgScale: typeof r.bgScale === "number" ? r.bgScale : 1.4,
+    bgX: typeof r.bgX === "number" ? r.bgX : 50,
+    bgY: typeof r.bgY === "number" ? r.bgY : 50,
+    height: typeof r.height === "number" ? r.height : 400,
+    items: (r.items ?? []).map((it: any) => ({
+      text: it.text ?? "",
+      level: it.level ?? 0,
+      isTitle: !!it.isTitle,
+      struck: !!it.struck,
+    })),
+    draft: r.draft ?? "",
+    draftLevel: r.draftLevel ?? 0,
+  };
+  return rec;
+}
 
 // ---- backend adapters ------------------------------------------------------
 
-async function loadAll(): Promise<Receipt[]> {
+async function loadAll(): Promise<Paper[]> {
   if (firebaseEnabled && db) {
     const snap = await getDocs(collection(db, COLLECTION));
-    return snap.docs.map((d) => d.data() as Receipt);
+    return snap.docs.map((d) => normalize(d.data()));
   }
   if (typeof window === "undefined") return [];
   try {
-    return JSON.parse(window.localStorage.getItem(LS_KEY) || "[]");
+    const stored = window.localStorage.getItem(LS_KEY);
+    const raw = stored
+      ? JSON.parse(stored)
+      : JSON.parse(window.localStorage.getItem(LS_KEY_OLD) || "[]"); // migrate
+    return Array.isArray(raw) ? raw.map(normalize) : [];
   } catch {
     return [];
   }
 }
 
-async function saveOne(receipt: Receipt, all: Receipt[]): Promise<void> {
+async function saveOne(paper: Paper, all: Paper[]): Promise<void> {
   if (firebaseEnabled && db) {
-    await setDoc(doc(db, COLLECTION, receipt.id), receipt);
+    await setDoc(doc(db, COLLECTION, paper.id), paper);
     return;
   }
   if (typeof window === "undefined") return;
   window.localStorage.setItem(LS_KEY, JSON.stringify(all));
 }
 
-async function deleteOne(id: string, all: Receipt[]): Promise<void> {
+async function deleteOne(id: string, all: Paper[]): Promise<void> {
   if (firebaseEnabled && db) {
     await deleteDoc(doc(db, COLLECTION, id));
     return;
@@ -48,20 +100,18 @@ async function deleteOne(id: string, all: Receipt[]): Promise<void> {
 // ---- hook ------------------------------------------------------------------
 
 export function usePapers() {
-  const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [papers, setPapers] = useState<Paper[]>([]);
   const [loaded, setLoaded] = useState(false);
 
-  // Latest snapshot, so debounced writes persist the freshest data.
-  const latest = useRef<Receipt[]>([]);
-  latest.current = receipts;
+  const latest = useRef<Paper[]>([]);
+  latest.current = papers;
 
-  // Per-receipt debounce timers so rapid typing doesn't hammer the backend.
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   useEffect(() => {
     loadAll()
-      .then((rs) => setReceipts(rs))
-      .catch((e) => console.error("Failed to load receipts", e))
+      .then((rs) => setPapers(rs))
+      .catch((e) => console.error("Failed to load papers", e))
       .finally(() => setLoaded(true));
   }, []);
 
@@ -73,22 +123,21 @@ export function usePapers() {
     }, 500);
   }, []);
 
-  const addReceipt = useCallback(
-    (r: Receipt) => {
-      setReceipts((prev) => {
-        const next = [...prev, r];
-        latest.current = next;
-        saveOne(r, next).catch(console.error);
-        return next;
-      });
-    },
-    []
-  );
+  const addPaper = useCallback((r: Paper) => {
+    setPapers((prev) => {
+      const next = [...prev, r];
+      latest.current = next;
+      saveOne(r, next).catch(console.error);
+      return next;
+    });
+  }, []);
 
-  const updateReceipt = useCallback(
-    (id: string, patch: Partial<Receipt>, persist = true) => {
-      setReceipts((prev) => {
-        const next = prev.map((r) => (r.id === id ? { ...r, ...patch } : r));
+  const updatePaper = useCallback(
+    (id: string, patch: Partial<Receipt> | Partial<Memo>, persist = true) => {
+      setPapers((prev) => {
+        const next = prev.map((r) =>
+          r.id === id ? ({ ...r, ...(patch as object) } as Paper) : r
+        );
         latest.current = next;
         if (persist) schedulePersist(id);
         return next;
@@ -97,8 +146,8 @@ export function usePapers() {
     [schedulePersist]
   );
 
-  const removeReceipt = useCallback((id: string) => {
-    setReceipts((prev) => {
+  const removePaper = useCallback((id: string) => {
+    setPapers((prev) => {
       const next = prev.filter((r) => r.id !== id);
       latest.current = next;
       deleteOne(id, next).catch(console.error);
@@ -107,7 +156,7 @@ export function usePapers() {
   }, []);
 
   const clearCrumpled = useCallback(() => {
-    setReceipts((prev) => {
+    setPapers((prev) => {
       const toRemove = prev.filter((r) => r.crumpled);
       const next = prev.filter((r) => !r.crumpled);
       latest.current = next;
@@ -117,11 +166,11 @@ export function usePapers() {
   }, []);
 
   return {
-    receipts,
+    papers,
     loaded,
-    addReceipt,
-    updateReceipt,
-    removeReceipt,
+    addPaper,
+    updatePaper,
+    removePaper,
     clearCrumpled,
   };
 }

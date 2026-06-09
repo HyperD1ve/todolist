@@ -5,10 +5,11 @@ const H = Math.round((W * 857) / 718); // sprite aspect ratio
 
 interface Props {
   count: number; // how many balls are in the bin
+  alert?: boolean; // a ball is in flight — rise to receive it
   onOpen: () => void;
 }
 
-export default function PaperBin({ count, onOpen }: Props) {
+export default function PaperBin({ count, alert, onOpen }: Props) {
   const [hover, setHover] = useState(false);
 
   return (
@@ -26,7 +27,7 @@ export default function PaperBin({ count, onOpen }: Props) {
         height: H,
         zIndex: 5000,
         cursor: "pointer",
-        transform: `translateY(${hover ? "30%" : "55%"})`,
+        transform: `translateY(${hover || alert ? "30%" : "55%"})`,
         transition: "transform 180ms ease-out",
       }}
     >

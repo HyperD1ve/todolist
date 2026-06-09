@@ -1,9 +1,11 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
 import { ListItem, Receipt as ReceiptT, RECEIPT_WIDTH } from "../lib/types";
+import { useDragPhysics } from "../lib/useDragPhysics";
+import { focusStyle } from "../lib/focus";
+import BallOnBoard from "./BallOnBoard";
 
-const CRUMPLE_MS = 3000; // long-press duration to crumple
-const DRAG_THRESHOLD = 5; // px of movement before a press becomes a drag
-const PIN_ZONE = 36; // drop within this many px of the top => pin
+const FONT_SIZE = 19; // ~50% larger than the original 13px
+const FOCUS_SCALE = 1.5;
 
 interface Props {
   receipt: ReceiptT;
@@ -12,137 +14,74 @@ interface Props {
   onStartEdit: (id: string) => void;
   onStopEdit: () => void;
   onUpdate: (id: string, patch: Partial<ReceiptT>, persist?: boolean) => void;
-  onCrumple: (id: string) => void;
+  onBall: (id: string) => void;
+  onLand: (id: string, hitBin: boolean) => void;
   bringToFront: (id: string) => number;
 }
 
-export default function Receipt({
+function Receipt({
   receipt,
   editing,
   boardRef,
   onStartEdit,
   onStopEdit,
   onUpdate,
-  onCrumple,
+  onBall,
+  onLand,
   bringToFront,
 }: Props) {
-  const [falling, setFalling] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
 
-  // Gesture bookkeeping for the pointer interaction (click vs drag vs hold).
-  const gesture = useRef({
-    down: false,
-    moved: false,
-    startX: 0,
-    startY: 0,
-    originX: 0,
-    originY: 0,
-    pointerId: 0,
-    crumbleTimer: 0 as ReturnType<typeof setTimeout> | number,
+  const { pos, rootRef, dragHandlers } = useDragPhysics({
+    id: receipt.id,
+    width: RECEIPT_WIDTH,
+    height: receipt.height,
+    x: receipt.x,
+    y: receipt.y,
+    editing,
+    balled: receipt.balled,
+    boardRef,
+    onUpdate,
+    onBall,
+    onLand,
+    onStartEdit,
+    bringToFront,
   });
 
   useEffect(() => {
     if (editing) editorRef.current?.focus();
   }, [editing]);
 
-  // ---- pointer gesture handling -------------------------------------------
-
-  const clearCrumbleTimer = () => {
-    if (gesture.current.crumbleTimer) {
-      clearTimeout(gesture.current.crumbleTimer as number);
-      gesture.current.crumbleTimer = 0;
-    }
-  };
-
-  const startCrumple = () => {
-    clearCrumbleTimer();
-    setFalling(true); // triggers the fall-away animation
-  };
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    if (editing || falling) return;
-    e.preventDefault();
-    const g = gesture.current;
-    g.down = true;
-    g.moved = false;
-    g.startX = e.clientX;
-    g.startY = e.clientY;
-    g.originX = receipt.x;
-    g.originY = receipt.y;
-    g.pointerId = e.pointerId;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    bringToFront(receipt.id);
-    // Stationary long-press => crumple.
-    g.crumbleTimer = setTimeout(startCrumple, CRUMPLE_MS);
-  };
-
-  const onPointerMove = (e: React.PointerEvent) => {
-    const g = gesture.current;
-    if (!g.down) return;
-    const dx = e.clientX - g.startX;
-    const dy = e.clientY - g.startY;
-    if (!g.moved && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
-      g.moved = true;
-      clearCrumbleTimer(); // movement cancels the crumple hold
-    }
-    if (g.moved) {
-      onUpdate(
-        receipt.id,
-        { x: g.originX + dx, y: g.originY + dy, pinned: false },
-        false
-      );
-    }
-  };
-
-  const onPointerUp = (e: React.PointerEvent) => {
-    const g = gesture.current;
-    if (!g.down) return;
-    g.down = false;
-    clearCrumbleTimer();
-    try {
-      (e.currentTarget as HTMLElement).releasePointerCapture(g.pointerId);
-    } catch {}
-
-    if (!g.moved) {
-      // A short, stationary click => edit.
-      onStartEdit(receipt.id);
-      return;
-    }
-
-    // Was a drag — decide whether it lands in the pin zone at the top.
-    const board = boardRef.current?.getBoundingClientRect();
-    const dropY = g.originY + (e.clientY - g.startY);
-    const dropX = g.originX + (e.clientX - g.startX);
-    const pinned = dropY <= PIN_ZONE;
-    onUpdate(
-      receipt.id,
-      {
-        x: dropX,
-        y: pinned ? 8 : dropY,
-        pinned,
-      },
-      true
+  // All hooks must run before this early return (React error #300 otherwise).
+  if (receipt.balled) {
+    return (
+      <BallOnBoard
+        rootRef={rootRef}
+        handlers={dragHandlers}
+        pos={pos}
+        ball={receipt.ball}
+        z={receipt.z}
+      />
     );
-    void board;
-  };
+  }
 
   // ---- list editor key handling -------------------------------------------
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Ink is permanent: deletion is disabled entirely.
     if (e.key === "Backspace" || e.key === "Delete") {
-      e.preventDefault();
+      e.preventDefault(); // permanent ink: no deleting
       return;
     }
 
     if (e.key === "Enter") {
       e.preventDefault();
       const text = receipt.draft.trim();
-      if (!text) return; // nothing to commit
+      if (!text) return;
       const item: ListItem = {
         text,
         level: receipt.draftLevel,
         isTitle: false,
+        struck: false,
       };
       onUpdate(receipt.id, { items: [...receipt.items, item], draft: "" });
       return;
@@ -151,28 +90,24 @@ export default function Receipt({
     if (e.key === "Tab") {
       e.preventDefault();
       if (e.shiftKey) {
-        // Step back out one sub-list level.
         onUpdate(receipt.id, {
           draftLevel: Math.max(0, receipt.draftLevel - 1),
         });
         return;
       }
       const text = receipt.draft.trim();
-      if (text) {
-        // Preceding text becomes the sub-list title; following items indent.
-        const title: ListItem = {
-          text,
-          level: receipt.draftLevel,
-          isTitle: true,
-        };
-        onUpdate(receipt.id, {
-          items: [...receipt.items, title],
-          draft: "",
-          draftLevel: receipt.draftLevel + 1,
-        });
-      } else {
-        onUpdate(receipt.id, { draftLevel: receipt.draftLevel + 1 });
-      }
+      if (!text) return; // no-op unless there's text to title the sub-list
+      const title: ListItem = {
+        text,
+        level: receipt.draftLevel,
+        isTitle: true,
+        struck: false,
+      };
+      onUpdate(receipt.id, {
+        items: [...receipt.items, title],
+        draft: "",
+        draftLevel: receipt.draftLevel + 1,
+      });
       return;
     }
 
@@ -182,38 +117,39 @@ export default function Receipt({
       return;
     }
 
-    // Printable single characters get appended to the draft line.
     if (e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
       onUpdate(receipt.id, { draft: receipt.draft + e.key });
     }
   };
 
-  // ---- render --------------------------------------------------------------
-
-  const onAnimEnd = () => {
-    if (falling) onCrumple(receipt.id);
+  const strikeItem = (index: number) => {
+    const item = receipt.items[index];
+    if (!item || item.struck) return; // not undoable
+    const items = receipt.items.map((it, i) =>
+      i === index ? { ...it, struck: true } : it
+    );
+    onUpdate(receipt.id, { items });
   };
 
   return (
     <div
-      className={`absolute no-select ${falling ? "fall-away" : ""}`}
+      ref={rootRef}
+      className="absolute no-select"
       style={{
-        left: receipt.x,
-        top: receipt.y,
+        left: pos.x,
+        top: pos.y,
         width: RECEIPT_WIDTH,
         height: receipt.height,
         zIndex: receipt.pinned ? 9000 + receipt.z : receipt.z,
+        transformOrigin: "top center",
         touchAction: "none",
-        cursor: editing ? "text" : "grab",
+        cursor: editing ? "default" : "grab",
         filter: "drop-shadow(2px 6px 6px rgba(0,0,0,0.35))",
+        ...focusStyle(editing, pos, RECEIPT_WIDTH, receipt.height, FOCUS_SCALE),
       }}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onAnimationEnd={onAnimEnd}
+      {...dragHandlers}
     >
-      {/* Pin / clip when fastened to the top of the board */}
       {receipt.pinned && (
         <div
           style={{
@@ -244,9 +180,11 @@ export default function Receipt({
           overflowY: "auto",
           outline: "none",
           backgroundImage: `url(/assets/${receipt.bg}.jpg)`,
-          backgroundSize: "100% 100%",
+          backgroundSize: `${receipt.bgScale * 100}% auto`,
+          backgroundPosition: `${receipt.bgX}% ${receipt.bgY}%`,
+          backgroundRepeat: "no-repeat",
           fontFamily: '"Courier New", Courier, monospace',
-          fontSize: 13,
+          fontSize: FONT_SIZE,
           lineHeight: "1.5",
           color: "#222",
           boxShadow: editing ? "inset 0 0 0 2px rgba(40,90,200,0.5)" : "none",
@@ -255,10 +193,25 @@ export default function Receipt({
         {receipt.items.map((it, i) => (
           <div
             key={i}
+            onClick={
+              editing
+                ? (e) => {
+                    e.stopPropagation();
+                    strikeItem(i);
+                  }
+                : undefined
+            }
             style={{
-              marginLeft: it.level * 16,
+              marginLeft: it.level * 18,
               fontWeight: it.isTitle ? 700 : 400,
-              textDecoration: it.isTitle ? "underline" : "none",
+              textDecoration: [
+                it.isTitle ? "underline" : "",
+                it.struck ? "line-through" : "",
+              ]
+                .filter(Boolean)
+                .join(" "),
+              opacity: it.struck ? 0.55 : 1,
+              cursor: editing ? "pointer" : "inherit",
               whiteSpace: "pre-wrap",
               wordBreak: "break-word",
             }}
@@ -267,11 +220,10 @@ export default function Receipt({
           </div>
         ))}
 
-        {/* The live draft line being typed (only meaningful while editing) */}
         {(editing || receipt.draft) && (
           <div
             style={{
-              marginLeft: receipt.draftLevel * 16,
+              marginLeft: receipt.draftLevel * 18,
               whiteSpace: "pre-wrap",
               wordBreak: "break-word",
               opacity: receipt.draft || editing ? 1 : 0.4,
@@ -283,11 +235,14 @@ export default function Receipt({
         )}
 
         {editing && receipt.items.length === 0 && !receipt.draft && (
-          <div style={{ opacity: 0.45, fontSize: 11, marginTop: 6 }}>
-            type… Enter = list item · Tab = sub-list · no deleting
+          <div style={{ opacity: 0.45, fontSize: 12, marginTop: 6 }}>
+            type… Enter = item · Tab = sub-list · click an item to cross it off ·
+            no deleting
           </div>
         )}
       </div>
     </div>
   );
 }
+
+export default React.memo(Receipt);
