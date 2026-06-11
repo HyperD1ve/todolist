@@ -17,6 +17,7 @@ interface Props {
   onBall: (id: string) => void;
   onLand: (id: string, hitBin: boolean) => void;
   bringToFront: (id: string) => number;
+  mobileImportant?: boolean;
 }
 
 function Receipt({
@@ -29,8 +30,10 @@ function Receipt({
   onBall,
   onLand,
   bringToFront,
+  mobileImportant = false,
 }: Props) {
   const editorRef = useRef<HTMLDivElement>(null);
+  const draftInputRef = useRef<HTMLTextAreaElement>(null);
 
   const { pos, rootRef, dragHandlers } = useDragPhysics({
     id: receipt.id,
@@ -49,8 +52,13 @@ function Receipt({
   });
 
   useEffect(() => {
-    if (editing) editorRef.current?.focus();
-  }, [editing]);
+    if (!editing) return;
+    if (mobileImportant) {
+      draftInputRef.current?.focus();
+      return;
+    }
+    editorRef.current?.focus();
+  }, [editing, mobileImportant]);
 
   // All hooks must run before this early return (React error #300 otherwise).
   if (receipt.balled) {
@@ -67,6 +75,18 @@ function Receipt({
 
   // ---- list editor key handling -------------------------------------------
 
+  const commitDraft = () => {
+    const text = receipt.draft.trim();
+    if (!text) return;
+    const item: ListItem = {
+      text,
+      level: receipt.draftLevel,
+      isTitle: false,
+      struck: false,
+    };
+    onUpdate(receipt.id, { items: [...receipt.items, item], draft: "" });
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Backspace" || e.key === "Delete") {
       e.preventDefault(); // permanent ink: no deleting
@@ -75,15 +95,7 @@ function Receipt({
 
     if (e.key === "Enter") {
       e.preventDefault();
-      const text = receipt.draft.trim();
-      if (!text) return;
-      const item: ListItem = {
-        text,
-        level: receipt.draftLevel,
-        isTitle: false,
-        struck: false,
-      };
-      onUpdate(receipt.id, { items: [...receipt.items, item], draft: "" });
+      commitDraft();
       return;
     }
 
@@ -123,6 +135,33 @@ function Receipt({
     }
   };
 
+  const handleMobileDraftKeyDown = (
+    e: React.KeyboardEvent<HTMLTextAreaElement>
+  ) => {
+    if (e.key === "Backspace" || e.key === "Delete") {
+      e.preventDefault();
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitDraft();
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      onStopEdit();
+    }
+  };
+
+  const handleMobileDraftChange = (
+    e: React.ChangeEvent<HTMLTextAreaElement>
+  ) => {
+    const next = e.currentTarget.value;
+    if (next.length >= receipt.draft.length) {
+      onUpdate(receipt.id, { draft: next });
+    }
+  };
+
   const strikeItem = (index: number) => {
     const item = receipt.items[index];
     if (!item || item.struck) return; // not undoable
@@ -132,23 +171,40 @@ function Receipt({
     onUpdate(receipt.id, { items });
   };
 
+  const rootHandlers = mobileImportant
+    ? {
+        onPointerDown: !editing
+          ? (e: React.PointerEvent<HTMLDivElement>) => {
+              e.stopPropagation();
+              onStartEdit(receipt.id);
+            }
+          : undefined,
+      }
+    : dragHandlers;
+
   return (
     <div
       ref={rootRef}
-      className="absolute no-select"
+      className={mobileImportant ? "no-select" : "absolute no-select"}
       style={{
-        left: pos.x,
-        top: pos.y,
-        width: RECEIPT_WIDTH,
-        height: receipt.height,
+        position: mobileImportant ? "relative" : undefined,
+        left: mobileImportant ? undefined : pos.x,
+        top: mobileImportant ? undefined : pos.y,
+        width: mobileImportant ? `min(100%, ${RECEIPT_WIDTH}px)` : RECEIPT_WIDTH,
+        height:
+          mobileImportant && editing
+            ? `min(${receipt.height}px, calc(100dvh - 72px))`
+            : receipt.height,
         zIndex: receipt.pinned ? 9000 + receipt.z : receipt.z,
         transformOrigin: "top center",
-        touchAction: "none",
-        cursor: editing ? "default" : "grab",
+        touchAction: mobileImportant ? "manipulation" : "none",
+        cursor: editing ? "default" : mobileImportant ? "pointer" : "grab",
         filter: "drop-shadow(2px 6px 6px rgba(0,0,0,0.35))",
-        ...focusStyle(editing, pos, RECEIPT_WIDTH, receipt.height, FOCUS_SCALE),
+        ...(!mobileImportant
+          ? focusStyle(editing, pos, RECEIPT_WIDTH, receipt.height, FOCUS_SCALE)
+          : {}),
       }}
-      {...dragHandlers}
+      {...rootHandlers}
     >
       {receipt.pinned && (
         <div
@@ -229,8 +285,39 @@ function Receipt({
               opacity: receipt.draft || editing ? 1 : 0.4,
             }}
           >
-            {receipt.draft}
-            {editing && <span className="caret-blink">▌</span>}
+            {mobileImportant && editing ? (
+              <textarea
+                ref={draftInputRef}
+                value={receipt.draft}
+                onChange={handleMobileDraftChange}
+                onKeyDown={handleMobileDraftKeyDown}
+                rows={1}
+                autoCapitalize="sentences"
+                spellCheck
+                style={{
+                  display: "inline-block",
+                  width: "100%",
+                  minHeight: FONT_SIZE * 1.6,
+                  padding: 0,
+                  margin: 0,
+                  border: 0,
+                  outline: "none",
+                  resize: "none",
+                  overflow: "hidden",
+                  background: "transparent",
+                  font: "inherit",
+                  lineHeight: "inherit",
+                  color: "inherit",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                }}
+              />
+            ) : (
+              <>
+                {receipt.draft}
+                {editing && <span className="caret-blink">▌</span>}
+              </>
+            )}
           </div>
         )}
 

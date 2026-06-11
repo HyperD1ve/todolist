@@ -19,6 +19,7 @@ interface Props {
   onBall: (id: string) => void;
   onLand: (id: string, hitBin: boolean) => void;
   bringToFront: (id: string) => number;
+  mobileImportant?: boolean;
 }
 
 function Memo({
@@ -31,6 +32,7 @@ function Memo({
   onBall,
   onLand,
   bringToFront,
+  mobileImportant = false,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawing = useRef<{ active: boolean; points: { x: number; y: number }[] }>(
@@ -168,25 +170,28 @@ function Memo({
     <div
       ref={rootRef}
       tabIndex={editing ? 0 : -1}
-      className="absolute no-select"
+      className={mobileImportant ? "no-select" : "absolute no-select"}
       style={{
-        left: pos.x,
-        top: pos.y,
+        position: mobileImportant ? "relative" : undefined,
+        left: mobileImportant ? undefined : pos.x,
+        top: mobileImportant ? undefined : pos.y,
         width: memo.size,
         height: memo.size,
         zIndex: memo.pinned ? 9000 + memo.z : memo.z,
         transformOrigin: "top center",
-        touchAction: "none",
+        touchAction: mobileImportant ? "auto" : "none",
         outline: "none",
-        cursor: editing ? "crosshair" : "grab",
+        cursor: mobileImportant ? "default" : editing ? "crosshair" : "grab",
         background: MEMO_COLORS[memo.color],
         boxShadow: editing
           ? "inset 0 0 0 2px rgba(40,90,200,0.5), 2px 6px 10px rgba(0,0,0,0.3)"
           : "2px 6px 10px rgba(0,0,0,0.3)",
-        ...focusStyle(editing, pos, memo.size, memo.size, FOCUS_SCALE),
+        ...(!mobileImportant
+          ? focusStyle(editing, pos, memo.size, memo.size, FOCUS_SCALE)
+          : {}),
       }}
-      {...editHandlers}
-      onKeyDown={editing ? handleKeyDown : undefined}
+      {...(!mobileImportant ? editHandlers : {})}
+      onKeyDown={!mobileImportant && editing ? handleKeyDown : undefined}
     >
       {memo.pinned && (
         <div
