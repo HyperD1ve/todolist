@@ -1,0 +1,37 @@
+name: tackboard
+description: A local-first skeuomorphic tackboard notes app.
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  file_picker: ^8.1.7
+  path: ^1.9.1
+  path_provider: ^2.1.5
+  sqflite: ^2.3.3
+  sqflite_common_ffi: ^2.3.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/app_icon.png
+    - assets/ball1.png
+    - assets/ball2.png
+    - assets/ball3.png
+    - assets/cardboard_bg.jpg
+    - assets/crumpled1.jpg
+    - assets/crumpled2.jpg
+    - assets/paperbin_side.png
+    - assets/paperbin_top.png
+    - assets/receipt_printer.png
+    - assets/tackboard.png
