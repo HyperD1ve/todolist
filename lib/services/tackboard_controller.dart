@@ -25,8 +25,10 @@ class TackboardController extends ChangeNotifier {
   String get syncDirectory => _repository.syncDirectory;
   String get deviceId => _repository.deviceId;
 
-  List<Paper> get onBoard => _papers.where((paper) => !paper.crumpled).toList(growable: false);
-  List<Paper> get binned => _papers.where((paper) => paper.crumpled).toList(growable: false);
+  List<Paper> get onBoard =>
+      _papers.where((paper) => !paper.crumpled).toList(growable: false);
+  List<Paper> get binned =>
+      _papers.where((paper) => paper.crumpled).toList(growable: false);
   bool get ballInPlay => onBoard.any((paper) => paper.balled);
 
   Future<void> init() async {
@@ -78,6 +80,11 @@ class TackboardController extends ChangeNotifier {
   }
 
   Future<void> printReceipt(Size boardSize) async {
+    final receipt = await createReceipt(boardSize);
+    startEdit(receipt.id);
+  }
+
+  Future<ReceiptPaper> createReceipt(Size boardSize) async {
     final boardWidth = boardSize.width <= 0 ? 1280.0 : boardSize.width;
     final spread = max(1.0, boardWidth - 360);
     final x = (120 + _random.nextDouble() * spread)
@@ -89,14 +96,15 @@ class TackboardController extends ChangeNotifier {
       z: ++_zCounter,
     );
     await addPaper(receipt);
-    startEdit(receipt.id);
+    return receipt;
   }
 
   Future<void> spawnMemo(String color, Size boardSize) async {
     final boardWidth = boardSize.width <= 0 ? 1280.0 : boardSize.width;
     final memo = MemoPaper.create(
       color: color,
-      x: max(40.0, boardWidth / 2 - memoSize / 2 + (_random.nextDouble() * 120 - 60)),
+      x: max(40.0,
+          boardWidth / 2 - memoSize / 2 + (_random.nextDouble() * 120 - 60)),
       y: 90 + _random.nextDouble() * 60,
       z: ++_zCounter,
     );
@@ -112,10 +120,12 @@ class TackboardController extends ChangeNotifier {
     await _repository.savePaper(stamped, preserveUpdatedAt: true);
   }
 
-  Future<void> updatePaper(String id, Paper Function(Paper paper) change) async {
+  Future<void> updatePaper(
+      String id, Paper Function(Paper paper) change) async {
     final index = _papers.indexWhere((paper) => paper.id == id);
     if (index < 0) return;
-    final stamped = change(_papers[index]).withSyncTime(DateTime.now().millisecondsSinceEpoch);
+    final stamped = change(_papers[index])
+        .withSyncTime(DateTime.now().millisecondsSinceEpoch);
     final next = [..._papers];
     next[index] = stamped;
     _papers = next;
@@ -130,7 +140,14 @@ class TackboardController extends ChangeNotifier {
   }
 
   Future<void> landBall(String id, {required bool hitBin}) async {
-    await updatePaper(id, (paper) => paper.move(balled: false, crumpled: true));
+    await trashPaper(id);
+  }
+
+  Future<void> trashPaper(String id) async {
+    await updatePaper(
+      id,
+      (paper) => paper.move(balled: false, crumpled: true, pinned: false),
+    );
   }
 
   Future<void> clearCrumpled() async {

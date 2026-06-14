@@ -68,6 +68,7 @@ class TackboardHome extends StatefulWidget {
 
 class _TackboardHomeState extends State<TackboardHome> {
   bool showBin = false;
+  bool tmuxMode = false;
   int confettiKey = 0;
 
   @override
@@ -78,6 +79,14 @@ class _TackboardHomeState extends State<TackboardHome> {
         final importantMobile = size.width / max(1, size.height) <= 0.8;
         if (importantMobile && showBin) showBin = false;
 
+        if (tmuxMode) {
+          return TmuxSessionView(
+            controller: widget.controller,
+            boardSize: size,
+            onDetach: () => setState(() => tmuxMode = false),
+          );
+        }
+
         return Stack(
           children: [
             TackboardSurface(
@@ -85,6 +94,10 @@ class _TackboardHomeState extends State<TackboardHome> {
               boardSize: size,
               importantMobile: importantMobile,
               onOpenBin: () => setState(() => showBin = true),
+              onOpenTmux: () {
+                widget.controller.stopEdit();
+                setState(() => tmuxMode = true);
+              },
               onConfetti: () => setState(() => confettiKey++),
             ),
             if (showBin && !importantMobile)
@@ -109,6 +122,7 @@ class TackboardSurface extends StatelessWidget {
     required this.boardSize,
     required this.importantMobile,
     required this.onOpenBin,
+    required this.onOpenTmux,
     required this.onConfetti,
     super.key,
   });
@@ -117,6 +131,7 @@ class TackboardSurface extends StatelessWidget {
   final Size boardSize;
   final bool importantMobile;
   final VoidCallback onOpenBin;
+  final VoidCallback onOpenTmux;
   final VoidCallback onConfetti;
 
   @override
@@ -207,6 +222,11 @@ class TackboardSurface extends StatelessWidget {
               onOpen: onOpenBin,
             ),
             SyncStrip(controller: controller),
+            Positioned(
+              top: 12,
+              left: 12,
+              child: _SmallButton(label: 'tmux', onTap: onOpenTmux),
+            ),
             if (controller.editingId != null)
               Positioned.fill(
                 child: GestureDetector(
@@ -1556,6 +1576,1132 @@ class _SmallButton extends StatelessWidget {
       child: Text(label),
     );
   }
+}
+
+class TmuxSessionView extends StatefulWidget {
+  const TmuxSessionView({
+    required this.controller,
+    required this.boardSize,
+    required this.onDetach,
+    super.key,
+  });
+
+  final TackboardController controller;
+  final Size boardSize;
+  final VoidCallback onDetach;
+
+  @override
+  State<TmuxSessionView> createState() => _TmuxSessionViewState();
+}
+
+class _TmuxSessionViewState extends State<TmuxSessionView> {
+  final focusNode = FocusNode();
+  final List<_TmuxWindow> windows = <_TmuxWindow>[];
+  int currentWindow = 0;
+  int chooserIndex = 0;
+  int windowSerial = 2;
+  int paneSerial = 1;
+  bool prefix = false;
+  bool chooserOpen = false;
+  bool renaming = false;
+  bool helpOpen = false;
+  bool trashWindowClosed = false;
+  String renameDraft = '';
+  String message = 'attached';
+
+  List<ReceiptPaper> get receipts => widget.controller.onBoard
+      .whereType<ReceiptPaper>()
+      .where((paper) => !paper.balled)
+      .toList(growable: false);
+
+  List<MemoPaper> get memos => widget.controller.onBoard
+      .whereType<MemoPaper>()
+      .where((paper) => paper.text.trim().isNotEmpty)
+      .toList(growable: false);
+
+  _TmuxWindow get activeWindow {
+    _syncSessionWithPapers();
+    currentWindow = currentWindow.clamp(0, windows.length - 1);
+    return windows[currentWindow];
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _syncSessionWithPapers();
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => focusNode.requestFocus());
+  }
+
+  @override
+  void didUpdateWidget(covariant TmuxSessionView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _syncSessionWithPapers();
+  }
+
+  @override
+  void dispose() {
+    focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    _syncSessionWithPapers();
+    final entries = _chooserEntries();
+    if (entries.isNotEmpty) {
+      chooserIndex = chooserIndex.clamp(0, entries.length - 1);
+    }
+
+    return Focus(
+      focusNode: focusNode,
+      autofocus: true,
+      onKeyEvent: _key,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: focusNode.requestFocus,
+        child: Container(
+          color: const Color(0xff080b08),
+          child: Stack(
+            children: [
+              Column(
+                children: [
+                  TmuxAlertTicker(memos: memos),
+                  Expanded(child: _buildWindow(activeWindow)),
+                  _TmuxStatusBar(
+                    windows: windows,
+                    current: currentWindow,
+                    prefix: prefix,
+                    renaming: renaming,
+                    message: message,
+                    renameDraft: renameDraft,
+                    onSelect: (index) => setState(() => currentWindow = index),
+                  ),
+                ],
+              ),
+              if (chooserOpen) _buildChooser(entries),
+              if (helpOpen) _buildHelp(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWindow(_TmuxWindow window) {
+    if (window.trash) return _buildTrashWindow();
+    if (window.panes.isEmpty) {
+      return _TmuxEmptyPane(
+        title: window.name,
+        active: true,
+        onTap: focusNode.requestFocus,
+      );
+    }
+    final paneWidgets = [
+      for (final pane in window.panes)
+        Expanded(
+          child: _TmuxReceiptPane(
+            pane: pane,
+            receipt: _receiptFor(pane.paperId),
+            active: pane.id == window.activePaneId,
+            onTap: () {
+              setState(() {
+                window.activePaneId = pane.id;
+                message = 'pane ${pane.label}';
+              });
+              focusNode.requestFocus();
+            },
+            onStrike: (receipt, index) => _strikeItem(receipt, index),
+          ),
+        ),
+    ];
+    return window.splitAxis == Axis.horizontal
+        ? Row(children: paneWidgets)
+        : Column(children: paneWidgets);
+  }
+
+  Widget _buildTrashWindow() {
+    final binned = widget.controller.binned;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      color: const Color(0xff060906),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('trash', style: _tmuxTitleStyle),
+          const SizedBox(height: 10),
+          Expanded(
+            child: binned.isEmpty
+                ? const Center(
+                    child: Text('The bin is empty.',
+                        style: TextStyle(
+                            color: Color(0xff779977),
+                            fontFamily: 'Courier',
+                            fontSize: 16)),
+                  )
+                : ListView.builder(
+                    itemCount: binned.length,
+                    itemBuilder: (context, index) {
+                      final paper = binned[index];
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Text(
+                          '${index + 1}. ${_paperTitle(paper)}',
+                          style: const TextStyle(
+                              color: Color(0xffc7f9c7),
+                              fontFamily: 'Courier',
+                              fontSize: 15),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildChooser(List<_TmuxChooserEntry> entries) {
+    return Positioned.fill(
+      child: Container(
+        color: const Color(0xcc000000),
+        child: Center(
+          child: Container(
+            width: min(760, MediaQuery.sizeOf(context).width * 0.86),
+            height: min(520, MediaQuery.sizeOf(context).height * 0.76),
+            decoration: BoxDecoration(
+              color: const Color(0xff101610),
+              border: Border.all(color: const Color(0xff76d676), width: 2),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  color: const Color(0xff76d676),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  child: const Text('windows',
+                      style: TextStyle(
+                          color: Color(0xff071007),
+                          fontFamily: 'Courier',
+                          fontWeight: FontWeight.w700)),
+                ),
+                Expanded(
+                  child: entries.isEmpty
+                      ? const Center(
+                          child: Text('no windows', style: _tmuxDimStyle))
+                      : ListView.builder(
+                          itemCount: entries.length,
+                          itemBuilder: (context, index) {
+                            final entry = entries[index];
+                            final selected = index == chooserIndex;
+                            return GestureDetector(
+                              onTap: () => _openChooserEntry(entry),
+                              child: Container(
+                                color: selected
+                                    ? const Color(0xff234723)
+                                    : Colors.transparent,
+                                padding: EdgeInsets.only(
+                                  left: entry.pane == null ? 12 : 36,
+                                  right: 12,
+                                  top: 6,
+                                  bottom: 6,
+                                ),
+                                child: Text(
+                                  entry.label,
+                                  style: TextStyle(
+                                    color: selected
+                                        ? const Color(0xffffffff)
+                                        : const Color(0xffc7f9c7),
+                                    fontFamily: 'Courier',
+                                    fontSize: 15,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  color: const Color(0xff0b110b),
+                  child: const Text('Enter open   x kill   Esc close',
+                      style: _tmuxDimStyle),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHelp() {
+    const lines = [
+      'C-b d detach to tackboard',
+      'C-b w window tree',
+      'C-b c new window/list',
+      'C-b % split right',
+      'C-b " split down',
+      'C-b x kill pane/window',
+      'C-b , rename window',
+      'C-b n / p next / previous',
+      'C-b arrows select pane',
+      'Enter commits typed text',
+      'Tab makes a sub-list title',
+    ];
+    return Positioned.fill(
+      child: GestureDetector(
+        onTap: () => setState(() => helpOpen = false),
+        child: Container(
+          color: const Color(0xcc000000),
+          child: Center(
+            child: Container(
+              width: 420,
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: const Color(0xff101610),
+                border: Border.all(color: const Color(0xff76d676), width: 2),
+              ),
+              child: Text(lines.join('\n'), style: _tmuxPaneStyle),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  KeyEventResult _key(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    if (renaming) return _renameKey(event);
+    if (chooserOpen) return _chooserKey(event);
+    if (helpOpen) {
+      setState(() => helpOpen = false);
+      return KeyEventResult.handled;
+    }
+    if (HardwareKeyboard.instance.isControlPressed &&
+        key == LogicalKeyboardKey.keyB) {
+      setState(() {
+        prefix = true;
+        message = 'prefix';
+      });
+      return KeyEventResult.handled;
+    }
+    if (prefix) {
+      _prefixKey(event);
+      return KeyEventResult.handled;
+    }
+    return _editKey(event);
+  }
+
+  KeyEventResult _renameKey(KeyDownEvent event) {
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.escape) {
+      setState(() {
+        renaming = false;
+        message = 'rename cancelled';
+      });
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter) {
+      final name = renameDraft.trim();
+      if (name.isNotEmpty) activeWindow.name = name;
+      setState(() {
+        renaming = false;
+        message = 'renamed ${activeWindow.name}';
+      });
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.backspace) {
+      if (renameDraft.isNotEmpty) {
+        setState(() => renameDraft =
+            renameDraft.substring(0, max(0, renameDraft.length - 1)));
+      }
+      return KeyEventResult.handled;
+    }
+    final character = event.character;
+    if (character != null &&
+        character.isNotEmpty &&
+        character.codeUnitAt(0) >= 32) {
+      setState(() => renameDraft += character);
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.handled;
+  }
+
+  KeyEventResult _chooserKey(KeyDownEvent event) {
+    final entries = _chooserEntries();
+    if (entries.isEmpty) {
+      setState(() => chooserOpen = false);
+      return KeyEventResult.handled;
+    }
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.keyW) {
+      setState(() => chooserOpen = false);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown || key == LogicalKeyboardKey.keyJ) {
+      setState(() => chooserIndex = min(entries.length - 1, chooserIndex + 1));
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.keyK) {
+      setState(() => chooserIndex = max(0, chooserIndex - 1));
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.keyX) {
+      _killChooserEntry(entries[chooserIndex]);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter) {
+      _openChooserEntry(entries[chooserIndex]);
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.handled;
+  }
+
+  void _prefixKey(KeyDownEvent event) {
+    final key = event.logicalKey;
+    setState(() => prefix = false);
+    if (key == LogicalKeyboardKey.keyD) {
+      widget.onDetach();
+    } else if (key == LogicalKeyboardKey.keyW) {
+      setState(() {
+        chooserOpen = true;
+        chooserIndex = 0;
+        message = 'choose-window';
+      });
+    } else if (key == LogicalKeyboardKey.keyC) {
+      _newWindow();
+    } else if (key == LogicalKeyboardKey.digit5 || event.character == '%') {
+      _split(Axis.horizontal);
+    } else if (event.character == '"') {
+      _split(Axis.vertical);
+    } else if (key == LogicalKeyboardKey.keyX) {
+      _killActive();
+    } else if (key == LogicalKeyboardKey.comma) {
+      setState(() {
+        renaming = true;
+        renameDraft = activeWindow.name;
+        message = 'rename-window';
+      });
+    } else if (key == LogicalKeyboardKey.keyN) {
+      _selectWindow(currentWindow + 1);
+    } else if (key == LogicalKeyboardKey.keyP) {
+      _selectWindow(currentWindow - 1);
+    } else if (key == LogicalKeyboardKey.keyO ||
+        key == LogicalKeyboardKey.arrowRight ||
+        key == LogicalKeyboardKey.arrowDown) {
+      _selectPane(1);
+    } else if (key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowUp) {
+      _selectPane(-1);
+    } else if (key == LogicalKeyboardKey.question || event.character == '?') {
+      setState(() => helpOpen = true);
+    } else {
+      setState(() => message = 'unknown prefix');
+    }
+  }
+
+  KeyEventResult _editKey(KeyDownEvent event) {
+    final window = activeWindow;
+    if (window.trash) return KeyEventResult.handled;
+    final pane = window.activePane;
+    final receipt = _receiptFor(pane?.paperId);
+    if (pane == null || receipt == null) return KeyEventResult.handled;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.backspace ||
+        key == LogicalKeyboardKey.delete) {
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter) {
+      _commitReceiptDraft(receipt);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.tab) {
+      if (HardwareKeyboard.instance.isShiftPressed) {
+        _changeReceipt(receipt,
+            receipt.copyWith(draftLevel: max(0, receipt.draftLevel - 1)));
+      } else {
+        _commitReceiptTitle(receipt);
+      }
+      return KeyEventResult.handled;
+    }
+    if (HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed ||
+        HardwareKeyboard.instance.isAltPressed) {
+      return KeyEventResult.handled;
+    }
+    final character = event.character;
+    if (character != null &&
+        character.isNotEmpty &&
+        character.codeUnitAt(0) >= 32) {
+      _changeReceipt(
+          receipt, receipt.copyWith(draft: receipt.draft + character));
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.handled;
+  }
+
+  void _syncSessionWithPapers() {
+    final liveIds = receipts.map((paper) => paper.id).toSet();
+    if (windows.isEmpty) {
+      final textWindow = _TmuxWindow(
+        id: 'w_text',
+        name: 'text',
+        panes: [
+          for (final receipt in receipts)
+            _TmuxPane(id: _nextPaneId(), paperId: receipt.id),
+        ],
+      );
+      windows.add(textWindow);
+      windows.add(_TmuxWindow(id: 'w_trash', name: 'trash', trash: true));
+    }
+
+    for (final window in windows.where((window) => !window.trash)) {
+      window.panes.removeWhere(
+        (pane) => pane.paperId != null && !liveIds.contains(pane.paperId),
+      );
+      if (window.activePaneId == null ||
+          !window.panes.any((pane) => pane.id == window.activePaneId)) {
+        window.activePaneId =
+            window.panes.isNotEmpty ? window.panes.first.id : null;
+      }
+    }
+
+    final panePaperIds = windows
+        .expand((window) => window.panes)
+        .map((pane) => pane.paperId)
+        .whereType<String>()
+        .toSet();
+    final missing = receipts
+        .where((receipt) => !panePaperIds.contains(receipt.id))
+        .toList(growable: false);
+    if (missing.isNotEmpty) {
+      final target = windows.firstWhere(
+        (window) => !window.trash,
+        orElse: () {
+          final created = _TmuxWindow(id: 'w_text', name: 'text');
+          windows.insert(0, created);
+          return created;
+        },
+      );
+      target.panes.addAll([
+        for (final receipt in missing)
+          _TmuxPane(id: _nextPaneId(), paperId: receipt.id),
+      ]);
+      target.activePaneId ??= target.panes.first.id;
+    }
+
+    windows.removeWhere(
+      (window) => !window.trash && window.panes.isEmpty && windows.length > 1,
+    );
+    if (!windows.any((window) => !window.trash)) {
+      windows.insert(0, _TmuxWindow(id: 'w_text', name: 'text'));
+    }
+    if (!trashWindowClosed && !windows.any((window) => window.trash)) {
+      windows.add(_TmuxWindow(id: 'w_trash', name: 'trash', trash: true));
+    }
+    if (trashWindowClosed &&
+        widget.controller.binned.isNotEmpty &&
+        !windows.any((window) => window.trash)) {
+      trashWindowClosed = false;
+      windows.add(_TmuxWindow(id: 'w_trash', name: 'trash', trash: true));
+    }
+    currentWindow = currentWindow.clamp(0, windows.length - 1);
+  }
+
+  Future<void> _newWindow() async {
+    final receipt = await widget.controller.createReceipt(widget.boardSize);
+    if (!mounted) return;
+    setState(() {
+      final serial = windowSerial++;
+      final window = _TmuxWindow(
+        id: 'w_$serial',
+        name: 'text-$serial',
+        panes: [_TmuxPane(id: _nextPaneId(), paperId: receipt.id)],
+      );
+      windows.insert(
+          max(0, windows.length - (_hasTrashWindow ? 1 : 0)), window);
+      currentWindow = windows.indexOf(window);
+      message = 'new-window ${window.name}';
+    });
+  }
+
+  Future<void> _split(Axis axis) async {
+    final window = activeWindow;
+    if (window.trash) {
+      setState(() => message = 'cannot split trash');
+      return;
+    }
+    final receipt = await widget.controller.createReceipt(widget.boardSize);
+    if (!mounted) return;
+    setState(() {
+      final pane = _TmuxPane(id: _nextPaneId(), paperId: receipt.id);
+      window.splitAxis = axis;
+      window.panes.add(pane);
+      window.activePaneId = pane.id;
+      message = axis == Axis.horizontal ? 'split right' : 'split down';
+    });
+  }
+
+  void _killActive() {
+    final window = activeWindow;
+    if (window.trash) {
+      setState(() {
+        trashWindowClosed = true;
+        windows.remove(window);
+        currentWindow = max(0, currentWindow - 1);
+        message = 'trash window killed';
+      });
+      return;
+    }
+    final pane = window.activePane;
+    if (pane == null) {
+      _killWindow(window);
+      return;
+    }
+    _killPane(window, pane);
+  }
+
+  void _killPane(_TmuxWindow window, _TmuxPane pane) {
+    setState(() {
+      window.panes.remove(pane);
+      if (pane.paperId != null) {
+        trashWindowClosed = false;
+        if (!windows.any((candidate) => candidate.trash)) {
+          windows.add(_TmuxWindow(id: 'w_trash', name: 'trash', trash: true));
+        }
+        unawaited(widget.controller.trashPaper(pane.paperId!));
+      }
+      if (window.panes.isEmpty) {
+        _killWindow(window, quiet: true);
+      } else {
+        window.activePaneId = window.panes.last.id;
+      }
+      message = 'killed pane ${pane.label}';
+    });
+  }
+
+  void _killWindow(_TmuxWindow window, {bool quiet = false}) {
+    if (window.trash) {
+      trashWindowClosed = true;
+      windows.remove(window);
+      return;
+    }
+    for (final pane in window.panes) {
+      if (pane.paperId != null) {
+        trashWindowClosed = false;
+        unawaited(widget.controller.trashPaper(pane.paperId!));
+      }
+    }
+    windows.remove(window);
+    if (!windows.any((candidate) => !candidate.trash)) {
+      windows.insert(0, _TmuxWindow(id: 'w_text', name: 'text'));
+    }
+    if (!windows.any((candidate) => candidate.trash)) {
+      windows.add(_TmuxWindow(id: 'w_trash', name: 'trash', trash: true));
+    }
+    currentWindow = currentWindow.clamp(0, windows.length - 1);
+    if (!quiet) message = 'killed window ${window.name}';
+  }
+
+  void _openChooserEntry(_TmuxChooserEntry entry) {
+    setState(() {
+      currentWindow = windows.indexOf(entry.window);
+      if (entry.pane != null) entry.window.activePaneId = entry.pane!.id;
+      chooserOpen = false;
+      message = entry.label;
+    });
+  }
+
+  void _killChooserEntry(_TmuxChooserEntry entry) {
+    if (entry.pane != null) {
+      _killPane(entry.window, entry.pane!);
+    } else {
+      setState(() => _killWindow(entry.window));
+    }
+    setState(() {
+      chooserOpen = true;
+      final entries = _chooserEntries();
+      chooserIndex =
+          entries.isEmpty ? 0 : chooserIndex.clamp(0, entries.length - 1);
+    });
+  }
+
+  void _selectWindow(int index) {
+    final next = index < 0
+        ? windows.length - 1
+        : index >= windows.length
+            ? 0
+            : index;
+    setState(() {
+      currentWindow = next;
+      message = windows[next].name;
+    });
+  }
+
+  void _selectPane(int delta) {
+    final window = activeWindow;
+    if (window.trash || window.panes.isEmpty) return;
+    final current = max(
+        0, window.panes.indexWhere((pane) => pane.id == window.activePaneId));
+    final next = (current + delta) % window.panes.length;
+    setState(() {
+      window.activePaneId =
+          window.panes[next < 0 ? window.panes.length - 1 : next].id;
+      message = 'pane ${window.activePane!.label}';
+    });
+  }
+
+  void _commitReceiptDraft(ReceiptPaper receipt) {
+    final text = receipt.draft.trim();
+    if (text.isEmpty) return;
+    _changeReceipt(
+      receipt,
+      receipt.copyWith(
+        items: [
+          ...receipt.items,
+          ListItem(
+              text: text,
+              level: receipt.draftLevel,
+              isTitle: false,
+              struck: false),
+        ],
+        draft: '',
+      ),
+    );
+  }
+
+  void _commitReceiptTitle(ReceiptPaper receipt) {
+    final text = receipt.draft.trim();
+    if (text.isEmpty) return;
+    _changeReceipt(
+      receipt,
+      receipt.copyWith(
+        items: [
+          ...receipt.items,
+          ListItem(
+              text: text,
+              level: receipt.draftLevel,
+              isTitle: true,
+              struck: false),
+        ],
+        draft: '',
+        draftLevel: receipt.draftLevel + 1,
+      ),
+    );
+  }
+
+  void _strikeItem(ReceiptPaper receipt, int index) {
+    if (index < 0 || index >= receipt.items.length) return;
+    final item = receipt.items[index];
+    if (item.struck) return;
+    final items = [...receipt.items];
+    items[index] = item.copyWith(struck: true);
+    _changeReceipt(receipt, receipt.copyWith(items: items));
+  }
+
+  void _changeReceipt(ReceiptPaper receipt, ReceiptPaper next) {
+    unawaited(widget.controller.updatePaper(receipt.id, (_) => next));
+  }
+
+  List<_TmuxChooserEntry> _chooserEntries() {
+    final entries = <_TmuxChooserEntry>[];
+    for (var i = 0; i < windows.length; i++) {
+      final window = windows[i];
+      entries.add(_TmuxChooserEntry.window(window, '$i: ${window.name}'));
+      for (var p = 0; p < window.panes.length; p++) {
+        final pane = window.panes[p];
+        entries.add(
+          _TmuxChooserEntry.pane(
+            window,
+            pane,
+            'pane $p  ${_paperTitle(_receiptFor(pane.paperId))}',
+          ),
+        );
+      }
+    }
+    return entries;
+  }
+
+  ReceiptPaper? _receiptFor(String? id) {
+    if (id == null) return null;
+    for (final paper in widget.controller.onBoard) {
+      if (paper is ReceiptPaper && paper.id == id) return paper;
+    }
+    return null;
+  }
+
+  bool get _hasTrashWindow => windows.any((window) => window.trash);
+
+  String _nextPaneId() => 'p_${paneSerial++}';
+}
+
+class _TmuxWindow {
+  _TmuxWindow({
+    required this.id,
+    required this.name,
+    this.trash = false,
+    List<_TmuxPane>? panes,
+  }) : panes = panes ?? <_TmuxPane>[] {
+    activePaneId = this.panes.isNotEmpty ? this.panes.first.id : null;
+  }
+
+  final String id;
+  String name;
+  final bool trash;
+  final List<_TmuxPane> panes;
+  Axis splitAxis = Axis.horizontal;
+  String? activePaneId;
+
+  _TmuxPane? get activePane {
+    for (final pane in panes) {
+      if (pane.id == activePaneId) return pane;
+    }
+    return panes.isEmpty ? null : panes.first;
+  }
+}
+
+class _TmuxPane {
+  const _TmuxPane({required this.id, required this.paperId});
+
+  final String id;
+  final String? paperId;
+  String get label => id.replaceFirst('p_', '');
+}
+
+class _TmuxChooserEntry {
+  const _TmuxChooserEntry.window(this.window, this.label) : pane = null;
+  const _TmuxChooserEntry.pane(this.window, this.pane, this.label);
+
+  final _TmuxWindow window;
+  final _TmuxPane? pane;
+  final String label;
+}
+
+class _TmuxReceiptPane extends StatelessWidget {
+  const _TmuxReceiptPane({
+    required this.pane,
+    required this.receipt,
+    required this.active,
+    required this.onTap,
+    required this.onStrike,
+  });
+
+  final _TmuxPane pane;
+  final ReceiptPaper? receipt;
+  final bool active;
+  final VoidCallback onTap;
+  final void Function(ReceiptPaper receipt, int index) onStrike;
+
+  @override
+  Widget build(BuildContext context) {
+    final receipt = this.receipt;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        decoration: BoxDecoration(
+          color: active ? const Color(0xff0d160d) : const Color(0xff080d08),
+          border: Border.all(
+            color: active ? const Color(0xffd8ff78) : const Color(0xff315931),
+            width: active ? 2 : 1,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              color: active ? const Color(0xffd8ff78) : const Color(0xff315931),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              child: Text(
+                'pane ${pane.label}  ${_paperTitle(receipt)}',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: active
+                      ? const Color(0xff081008)
+                      : const Color(0xffd7fbd7),
+                  fontFamily: 'Courier',
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+            Expanded(
+              child: receipt == null
+                  ? const _TmuxEmptyPaneBody()
+                  : ListView(
+                      padding: const EdgeInsets.all(12),
+                      children: [
+                        for (var i = 0; i < receipt.items.length; i++)
+                          GestureDetector(
+                            onTap: () => onStrike(receipt, i),
+                            child: Padding(
+                              padding: EdgeInsets.only(
+                                  left: receipt.items[i].level * 18, bottom: 4),
+                              child: Text(
+                                receipt.items[i].isTitle
+                                    ? receipt.items[i].text
+                                    : '- ${receipt.items[i].text}',
+                                style: _tmuxPaneStyle.copyWith(
+                                  color: receipt.items[i].struck
+                                      ? const Color(0xff638263)
+                                      : const Color(0xffc7f9c7),
+                                  fontWeight: receipt.items[i].isTitle
+                                      ? FontWeight.w700
+                                      : FontWeight.w400,
+                                  decoration: receipt.items[i].struck
+                                      ? TextDecoration.lineThrough
+                                      : receipt.items[i].isTitle
+                                          ? TextDecoration.underline
+                                          : TextDecoration.none,
+                                ),
+                              ),
+                            ),
+                          ),
+                        Padding(
+                          padding:
+                              EdgeInsets.only(left: receipt.draftLevel * 18),
+                          child: Text('> ${receipt.draft}',
+                              style: _tmuxPaneStyle.copyWith(
+                                  color: const Color(0xffffffff))),
+                        ),
+                      ],
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TmuxEmptyPane extends StatelessWidget {
+  const _TmuxEmptyPane({
+    required this.title,
+    required this.active,
+    required this.onTap,
+  });
+
+  final String title;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        decoration: BoxDecoration(
+          color: const Color(0xff080d08),
+          border: Border.all(color: const Color(0xff315931), width: 1),
+        ),
+        child: Column(
+          children: [
+            Container(
+              color: const Color(0xff315931),
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              child: Text(title, style: _tmuxPaneStyle),
+            ),
+            const Expanded(child: _TmuxEmptyPaneBody()),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TmuxEmptyPaneBody extends StatelessWidget {
+  const _TmuxEmptyPaneBody();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Text('no list', style: _tmuxDimStyle),
+    );
+  }
+}
+
+class TmuxAlertTicker extends StatefulWidget {
+  const TmuxAlertTicker({required this.memos, super.key});
+
+  final List<MemoPaper> memos;
+
+  @override
+  State<TmuxAlertTicker> createState() => _TmuxAlertTickerState();
+}
+
+class _TmuxAlertTickerState extends State<TmuxAlertTicker>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController controller;
+
+  @override
+  void initState() {
+    super.initState();
+    controller = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 24),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final text = widget.memos.isEmpty
+        ? 'post-it alerts: --'
+        : widget.memos
+            .map((memo) => memo.text.trim().replaceAll('\n', ' / '))
+            .join('   |   ');
+    return Container(
+      height: 32,
+      color: const Color(0xffd8ff78),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return ClipRect(
+            child: AnimatedBuilder(
+              animation: controller,
+              builder: (context, child) {
+                final width = constraints.maxWidth;
+                return Transform.translate(
+                  offset: Offset(width - controller.value * width * 2, 0),
+                  child: child,
+                );
+              },
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '$text   |   $text',
+                  maxLines: 1,
+                  softWrap: false,
+                  style: const TextStyle(
+                    color: Color(0xff071007),
+                    fontFamily: 'Courier',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _TmuxStatusBar extends StatelessWidget {
+  const _TmuxStatusBar({
+    required this.windows,
+    required this.current,
+    required this.prefix,
+    required this.renaming,
+    required this.message,
+    required this.renameDraft,
+    required this.onSelect,
+  });
+
+  final List<_TmuxWindow> windows;
+  final int current;
+  final bool prefix;
+  final bool renaming;
+  final String message;
+  final String renameDraft;
+  final ValueChanged<int> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 30,
+      color: const Color(0xff315931),
+      child: Row(
+        children: [
+          for (var i = 0; i < windows.length; i++)
+            GestureDetector(
+              onTap: () => onSelect(i),
+              child: Container(
+                color: i == current
+                    ? const Color(0xffd8ff78)
+                    : const Color(0xff315931),
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                alignment: Alignment.center,
+                child: Text(
+                  '$i:${windows[i].name}',
+                  style: TextStyle(
+                    color: i == current
+                        ? const Color(0xff071007)
+                        : const Color(0xffd7fbd7),
+                    fontFamily: 'Courier',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            ),
+          const Spacer(),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: Text(
+              renaming
+                  ? 'rename: $renameDraft'
+                  : prefix
+                      ? 'C-b'
+                      : message,
+              style: const TextStyle(
+                color: Color(0xffffffff),
+                fontFamily: 'Courier',
+                fontSize: 13,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+const _tmuxTitleStyle = TextStyle(
+  color: Color(0xffd8ff78),
+  fontFamily: 'Courier',
+  fontWeight: FontWeight.w700,
+  fontSize: 18,
+);
+
+const _tmuxPaneStyle = TextStyle(
+  color: Color(0xffc7f9c7),
+  fontFamily: 'Courier',
+  fontSize: 15,
+  height: 1.35,
+);
+
+const _tmuxDimStyle = TextStyle(
+  color: Color(0xff779977),
+  fontFamily: 'Courier',
+  fontSize: 14,
+);
+
+String _paperTitle(Paper? paper) {
+  if (paper == null) return 'empty';
+  if (paper is MemoPaper) {
+    final text = paper.text.trim().replaceAll('\n', ' ');
+    return text.isEmpty ? '${paper.color} memo' : text;
+  }
+  final receipt = paper as ReceiptPaper;
+  for (final item in receipt.items) {
+    if (item.text.trim().isNotEmpty) return item.text.trim();
+  }
+  return receipt.draft.trim().isEmpty
+      ? 'untitled receipt'
+      : receipt.draft.trim();
 }
 
 class ConfettiBurst extends StatefulWidget {
