@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 import 'dart:ui';
 
@@ -1606,8 +1607,10 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
   bool renaming = false;
   bool helpOpen = false;
   bool trashWindowClosed = false;
+  bool restoredLayout = false;
   String renameDraft = '';
   String message = 'attached';
+  String? lastPersistedLayout;
 
   List<ReceiptPaper> get receipts => widget.controller.onBoard
       .whereType<ReceiptPaper>()
@@ -1628,6 +1631,7 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
   @override
   void initState() {
     super.initState();
+    _restorePersistedLayout();
     _syncSessionWithPapers();
     WidgetsBinding.instance
         .addPostFrameCallback((_) => focusNode.requestFocus());
@@ -1636,6 +1640,7 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
   @override
   void didUpdateWidget(covariant TmuxSessionView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    _restorePersistedLayout();
     _syncSessionWithPapers();
   }
 
@@ -1647,6 +1652,7 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
 
   @override
   Widget build(BuildContext context) {
+    _restorePersistedLayout();
     _syncSessionWithPapers();
     final entries = _chooserEntries();
     if (entries.isNotEmpty) {
@@ -1675,7 +1681,10 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
                     renaming: renaming,
                     message: message,
                     renameDraft: renameDraft,
-                    onSelect: (index) => setState(() => currentWindow = index),
+                    onSelect: (index) {
+                      setState(() => currentWindow = index);
+                      _persistLayout();
+                    },
                   ),
                 ],
               ),
@@ -1690,34 +1699,42 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
 
   Widget _buildWindow(_TmuxWindow window) {
     if (window.trash) return _buildTrashWindow();
-    if (window.panes.isEmpty) {
+    final root = window.root;
+    if (root == null) {
       return _TmuxEmptyPane(
         title: window.name,
         active: true,
         onTap: focusNode.requestFocus,
       );
     }
-    final paneWidgets = [
-      for (final pane in window.panes)
-        Expanded(
-          child: _TmuxReceiptPane(
-            pane: pane,
-            receipt: _receiptFor(pane.paperId),
-            active: pane.id == window.activePaneId,
-            onTap: () {
-              setState(() {
-                window.activePaneId = pane.id;
-                message = 'pane ${pane.label}';
-              });
-              focusNode.requestFocus();
-            },
-            onStrike: (receipt, index) => _strikeItem(receipt, index),
-          ),
-        ),
+    return _buildNode(window, root);
+  }
+
+  Widget _buildNode(_TmuxWindow window, _TmuxNode node) {
+    final pane = node.pane;
+    if (pane != null) {
+      return _TmuxReceiptPane(
+        pane: pane,
+        receipt: _receiptFor(pane.paperId),
+        active: pane.id == window.activePaneId,
+        onTap: () {
+          setState(() {
+            window.activePaneId = pane.id;
+            message = 'pane ${pane.label}';
+          });
+          _persistLayout();
+          focusNode.requestFocus();
+        },
+        onStrike: (receipt, index) => _strikeItem(receipt, index),
+      );
+    }
+    final children = [
+      for (final child in node.children)
+        Expanded(child: _buildNode(window, child)),
     ];
-    return window.splitAxis == Axis.horizontal
-        ? Row(children: paneWidgets)
-        : Column(children: paneWidgets);
+    return node.splitAxis == Axis.horizontal
+        ? Row(children: children)
+        : Column(children: children);
   }
 
   Widget _buildTrashWindow() {
@@ -1890,6 +1907,7 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
       return KeyEventResult.handled;
     }
     if (prefix) {
+      if (_isModifierKey(key)) return KeyEventResult.handled;
       _prefixKey(event);
       return KeyEventResult.handled;
     }
@@ -1913,6 +1931,7 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
         renaming = false;
         message = 'renamed ${activeWindow.name}';
       });
+      _persistLayout();
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.backspace) {
@@ -1976,9 +1995,9 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
       });
     } else if (key == LogicalKeyboardKey.keyC) {
       _newWindow();
-    } else if (key == LogicalKeyboardKey.digit5 || event.character == '%') {
+    } else if (_matchesPercent(event)) {
       _split(Axis.horizontal);
-    } else if (event.character == '"') {
+    } else if (_matchesDoubleQuote(event)) {
       _split(Axis.vertical);
     } else if (key == LogicalKeyboardKey.keyX) {
       _killActive();
@@ -1999,11 +2018,27 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
     } else if (key == LogicalKeyboardKey.arrowLeft ||
         key == LogicalKeyboardKey.arrowUp) {
       _selectPane(-1);
-    } else if (key == LogicalKeyboardKey.question || event.character == '?') {
+    } else if (_matchesQuestion(event)) {
       setState(() => helpOpen = true);
     } else {
       setState(() => message = 'unknown prefix');
     }
+  }
+
+  bool _isModifierKey(LogicalKeyboardKey key) {
+    return key == LogicalKeyboardKey.shift ||
+        key == LogicalKeyboardKey.shiftLeft ||
+        key == LogicalKeyboardKey.shiftRight ||
+        key == LogicalKeyboardKey.control ||
+        key == LogicalKeyboardKey.controlLeft ||
+        key == LogicalKeyboardKey.controlRight ||
+        key == LogicalKeyboardKey.alt ||
+        key == LogicalKeyboardKey.altLeft ||
+        key == LogicalKeyboardKey.altRight ||
+        key == LogicalKeyboardKey.meta ||
+        key == LogicalKeyboardKey.metaLeft ||
+        key == LogicalKeyboardKey.metaRight ||
+        key == LogicalKeyboardKey.capsLock;
   }
 
   KeyEventResult _editKey(KeyDownEvent event) {
@@ -2048,6 +2083,8 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
   }
 
   void _syncSessionWithPapers() {
+    _restorePersistedLayout();
+    var changed = false;
     final liveIds = receipts.map((paper) => paper.id).toSet();
     if (windows.isEmpty) {
       final textWindow = _TmuxWindow(
@@ -2060,16 +2097,27 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
       );
       windows.add(textWindow);
       windows.add(_TmuxWindow(id: 'w_trash', name: 'trash', trash: true));
+      changed = true;
     }
 
     for (final window in windows.where((window) => !window.trash)) {
-      window.panes.removeWhere(
-        (pane) => pane.paperId != null && !liveIds.contains(pane.paperId),
-      );
+      final before = window.panes.length;
+      final stalePanes = window.panes
+          .where(
+              (pane) => pane.paperId != null && !liveIds.contains(pane.paperId))
+          .toList(growable: false);
+      for (final pane in stalePanes) {
+        window.removePane(pane);
+      }
+      if (window.panes.length != before) changed = true;
       if (window.activePaneId == null ||
           !window.panes.any((pane) => pane.id == window.activePaneId)) {
-        window.activePaneId =
+        final nextActivePaneId =
             window.panes.isNotEmpty ? window.panes.first.id : null;
+        if (window.activePaneId != nextActivePaneId) {
+          window.activePaneId = nextActivePaneId;
+          changed = true;
+        }
       }
     }
 
@@ -2090,34 +2138,42 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
           return created;
         },
       );
-      target.panes.addAll([
-        for (final receipt in missing)
-          _TmuxPane(id: _nextPaneId(), paperId: receipt.id),
-      ]);
-      target.activePaneId ??= target.panes.first.id;
+      for (final receipt in missing) {
+        target.addPane(_TmuxPane(id: _nextPaneId(), paperId: receipt.id));
+      }
+      changed = true;
     }
 
+    final beforeWindowCount = windows.length;
     windows.removeWhere(
       (window) => !window.trash && window.panes.isEmpty && windows.length > 1,
     );
+    if (windows.length != beforeWindowCount) changed = true;
     if (!windows.any((window) => !window.trash)) {
       windows.insert(0, _TmuxWindow(id: 'w_text', name: 'text'));
+      changed = true;
     }
     if (!trashWindowClosed && !windows.any((window) => window.trash)) {
       windows.add(_TmuxWindow(id: 'w_trash', name: 'trash', trash: true));
+      changed = true;
     }
     if (trashWindowClosed &&
         widget.controller.binned.isNotEmpty &&
         !windows.any((window) => window.trash)) {
       trashWindowClosed = false;
       windows.add(_TmuxWindow(id: 'w_trash', name: 'trash', trash: true));
+      changed = true;
     }
-    currentWindow = currentWindow.clamp(0, windows.length - 1);
+    final nextCurrent = currentWindow.clamp(0, windows.length - 1);
+    if (nextCurrent != currentWindow) {
+      currentWindow = nextCurrent;
+      changed = true;
+    }
+    if (changed) _persistLayout();
   }
 
   Future<void> _newWindow() async {
-    final receipt = await widget.controller.createReceipt(widget.boardSize);
-    if (!mounted) return;
+    final receipt = widget.controller.makeReceipt(widget.boardSize);
     setState(() {
       final serial = windowSerial++;
       final window = _TmuxWindow(
@@ -2130,6 +2186,8 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
       currentWindow = windows.indexOf(window);
       message = 'new-window ${window.name}';
     });
+    _persistLayout();
+    await widget.controller.addPaper(receipt);
   }
 
   Future<void> _split(Axis axis) async {
@@ -2138,15 +2196,14 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
       setState(() => message = 'cannot split trash');
       return;
     }
-    final receipt = await widget.controller.createReceipt(widget.boardSize);
-    if (!mounted) return;
+    final receipt = widget.controller.makeReceipt(widget.boardSize);
     setState(() {
       final pane = _TmuxPane(id: _nextPaneId(), paperId: receipt.id);
-      window.splitAxis = axis;
-      window.panes.add(pane);
-      window.activePaneId = pane.id;
+      window.splitActivePane(axis, pane);
       message = axis == Axis.horizontal ? 'split right' : 'split down';
     });
+    _persistLayout();
+    await widget.controller.addPaper(receipt);
   }
 
   void _killActive() {
@@ -2158,11 +2215,13 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
         currentWindow = max(0, currentWindow - 1);
         message = 'trash window killed';
       });
+      _persistLayout();
       return;
     }
     final pane = window.activePane;
     if (pane == null) {
       _killWindow(window);
+      _persistLayout();
       return;
     }
     _killPane(window, pane);
@@ -2170,7 +2229,7 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
 
   void _killPane(_TmuxWindow window, _TmuxPane pane) {
     setState(() {
-      window.panes.remove(pane);
+      window.removePane(pane);
       if (pane.paperId != null) {
         trashWindowClosed = false;
         if (!windows.any((candidate) => candidate.trash)) {
@@ -2180,11 +2239,10 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
       }
       if (window.panes.isEmpty) {
         _killWindow(window, quiet: true);
-      } else {
-        window.activePaneId = window.panes.last.id;
       }
       message = 'killed pane ${pane.label}';
     });
+    _persistLayout();
   }
 
   void _killWindow(_TmuxWindow window, {bool quiet = false}) {
@@ -2217,6 +2275,7 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
       chooserOpen = false;
       message = entry.label;
     });
+    _persistLayout();
   }
 
   void _killChooserEntry(_TmuxChooserEntry entry) {
@@ -2224,6 +2283,7 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
       _killPane(entry.window, entry.pane!);
     } else {
       setState(() => _killWindow(entry.window));
+      _persistLayout();
     }
     setState(() {
       chooserOpen = true;
@@ -2243,6 +2303,7 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
       currentWindow = next;
       message = windows[next].name;
     });
+    _persistLayout();
   }
 
   void _selectPane(int delta) {
@@ -2256,6 +2317,7 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
           window.panes[next < 0 ? window.panes.length - 1 : next].id;
       message = 'pane ${window.activePane!.label}';
     });
+    _persistLayout();
   }
 
   void _commitReceiptDraft(ReceiptPaper receipt) {
@@ -2310,6 +2372,55 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
     unawaited(widget.controller.updatePaper(receipt.id, (_) => next));
   }
 
+  void _restorePersistedLayout() {
+    final source = widget.controller.tmuxLayoutJson;
+    if (source == null || source.isEmpty) {
+      restoredLayout = true;
+      return;
+    }
+    if (restoredLayout && source == lastPersistedLayout) return;
+    restoredLayout = true;
+    try {
+      final decoded = jsonDecode(source);
+      if (decoded is! Map) return;
+      final rawWindows = decoded['windows'];
+      if (rawWindows is! List) return;
+      final restoredWindows = rawWindows
+          .whereType<Map>()
+          .map(_TmuxWindow.fromJson)
+          .where((window) => window != null)
+          .cast<_TmuxWindow>()
+          .toList(growable: false);
+      if (restoredWindows.isEmpty) return;
+      windows
+        ..clear()
+        ..addAll(restoredWindows);
+      currentWindow = _intFromJson(decoded['currentWindow'], 0);
+      windowSerial = max(2, _intFromJson(decoded['windowSerial'], 2));
+      paneSerial = max(1, _intFromJson(decoded['paneSerial'], 1));
+      trashWindowClosed = decoded['trashWindowClosed'] == true;
+      lastPersistedLayout = source;
+    } catch (_) {
+      // Fall back to a fresh tmux layout if an older setting is malformed.
+    }
+  }
+
+  void _persistLayout() {
+    if (!widget.controller.loaded) return;
+    final encoded = jsonEncode({
+      'schema': 1,
+      'currentWindow': currentWindow,
+      'windowSerial': windowSerial,
+      'paneSerial': paneSerial,
+      'trashWindowClosed': trashWindowClosed,
+      'windows':
+          windows.map((window) => window.toJson()).toList(growable: false),
+    });
+    if (encoded == lastPersistedLayout) return;
+    lastPersistedLayout = encoded;
+    unawaited(widget.controller.saveTmuxLayout(encoded));
+  }
+
   List<_TmuxChooserEntry> _chooserEntries() {
     final entries = <_TmuxChooserEntry>[];
     for (var i = 0; i < windows.length; i++) {
@@ -2340,6 +2451,30 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
   bool get _hasTrashWindow => windows.any((window) => window.trash);
 
   String _nextPaneId() => 'p_${paneSerial++}';
+
+  bool _matchesPercent(KeyDownEvent event) {
+    return event.character == '%' ||
+        event.logicalKey == LogicalKeyboardKey.percent ||
+        (HardwareKeyboard.instance.isShiftPressed &&
+            (event.logicalKey == LogicalKeyboardKey.digit5 ||
+                event.physicalKey == PhysicalKeyboardKey.digit5));
+  }
+
+  bool _matchesDoubleQuote(KeyDownEvent event) {
+    return event.character == '"' ||
+        event.logicalKey == LogicalKeyboardKey.quote ||
+        (HardwareKeyboard.instance.isShiftPressed &&
+            (event.logicalKey == LogicalKeyboardKey.quoteSingle ||
+                event.physicalKey == PhysicalKeyboardKey.quote));
+  }
+
+  bool _matchesQuestion(KeyDownEvent event) {
+    return event.character == '?' ||
+        event.logicalKey == LogicalKeyboardKey.question ||
+        (HardwareKeyboard.instance.isShiftPressed &&
+            (event.logicalKey == LogicalKeyboardKey.slash ||
+                event.physicalKey == PhysicalKeyboardKey.slash));
+  }
 }
 
 class _TmuxWindow {
@@ -2348,22 +2483,193 @@ class _TmuxWindow {
     required this.name,
     this.trash = false,
     List<_TmuxPane>? panes,
-  }) : panes = panes ?? <_TmuxPane>[] {
+    _TmuxNode? root,
+  }) : root = root ?? _TmuxNode.fromPanes(panes ?? const <_TmuxPane>[]) {
     activePaneId = this.panes.isNotEmpty ? this.panes.first.id : null;
   }
 
   final String id;
   String name;
   final bool trash;
-  final List<_TmuxPane> panes;
-  Axis splitAxis = Axis.horizontal;
+  _TmuxNode? root;
   String? activePaneId;
+
+  List<_TmuxPane> get panes => root?.panes() ?? const <_TmuxPane>[];
+
+  static _TmuxWindow? fromJson(Map<dynamic, dynamic> map) {
+    final id = map['id']?.toString();
+    final name = map['name']?.toString();
+    if (id == null || name == null) return null;
+    final rawPanes = map['panes'];
+    final rawRoot = map['root'];
+    final window = _TmuxWindow(
+      id: id,
+      name: name,
+      trash: map['trash'] == true,
+      root: rawRoot is Map ? _TmuxNode.fromJson(rawRoot) : null,
+      panes: rawRoot is Map
+          ? null
+          : rawPanes is List
+              ? rawPanes
+                  .whereType<Map>()
+                  .map(_TmuxPane.fromJson)
+                  .where((pane) => pane != null)
+                  .cast<_TmuxPane>()
+                  .toList(growable: false)
+              : const <_TmuxPane>[],
+    );
+    final activePaneId = map['activePaneId']?.toString();
+    if (activePaneId != null &&
+        window.panes.any((pane) => pane.id == activePaneId)) {
+      window.activePaneId = activePaneId;
+    }
+    return window;
+  }
+
+  Map<String, Object?> toJson() {
+    return {
+      'id': id,
+      'name': name,
+      'trash': trash,
+      'activePaneId': activePaneId,
+      'root': root?.toJson(),
+    };
+  }
 
   _TmuxPane? get activePane {
     for (final pane in panes) {
       if (pane.id == activePaneId) return pane;
     }
     return panes.isEmpty ? null : panes.first;
+  }
+
+  void addPane(_TmuxPane pane) {
+    root = root == null
+        ? _TmuxNode.pane(pane)
+        : _TmuxNode.split(Axis.horizontal, [root!, _TmuxNode.pane(pane)]);
+    activePaneId = pane.id;
+  }
+
+  void splitActivePane(Axis axis, _TmuxPane pane) {
+    if (activePaneId == null || root == null) {
+      addPane(pane);
+      return;
+    }
+    final split = root!.splitPane(activePaneId!, axis, pane);
+    if (split == null) {
+      addPane(pane);
+      return;
+    }
+    root = split;
+    activePaneId = pane.id;
+  }
+
+  void removePane(_TmuxPane pane) {
+    root = root?.removePane(pane.id);
+    activePaneId = panes.any((candidate) => candidate.id == activePaneId)
+        ? activePaneId
+        : panes.isNotEmpty
+            ? panes.last.id
+            : null;
+  }
+}
+
+class _TmuxNode {
+  const _TmuxNode.pane(this.pane)
+      : splitAxis = null,
+        children = const <_TmuxNode>[];
+
+  const _TmuxNode.split(this.splitAxis, this.children) : pane = null;
+
+  final _TmuxPane? pane;
+  final Axis? splitAxis;
+  final List<_TmuxNode> children;
+
+  static _TmuxNode? fromPanes(List<_TmuxPane> panes) {
+    if (panes.isEmpty) return null;
+    if (panes.length == 1) return _TmuxNode.pane(panes.first);
+    return _TmuxNode.split(
+      Axis.horizontal,
+      panes.map(_TmuxNode.pane).toList(growable: false),
+    );
+  }
+
+  static _TmuxNode? fromJson(Map<dynamic, dynamic> map) {
+    if (map['type'] == 'pane') {
+      final rawPane = map['pane'];
+      if (rawPane is! Map) return null;
+      final pane = _TmuxPane.fromJson(rawPane);
+      return pane == null ? null : _TmuxNode.pane(pane);
+    }
+    if (map['type'] == 'split') {
+      final rawChildren = map['children'];
+      if (rawChildren is! List) return null;
+      final children = rawChildren
+          .whereType<Map>()
+          .map(_TmuxNode.fromJson)
+          .where((node) => node != null)
+          .cast<_TmuxNode>()
+          .toList(growable: false);
+      if (children.isEmpty) return null;
+      if (children.length == 1) return children.first;
+      final axis = map['axis'] == 'vertical' ? Axis.vertical : Axis.horizontal;
+      return _TmuxNode.split(axis, children);
+    }
+    return null;
+  }
+
+  List<_TmuxPane> panes() {
+    final pane = this.pane;
+    if (pane != null) return [pane];
+    return [
+      for (final child in children) ...child.panes(),
+    ];
+  }
+
+  _TmuxNode? splitPane(String targetPaneId, Axis axis, _TmuxPane newPane) {
+    final pane = this.pane;
+    if (pane != null) {
+      if (pane.id != targetPaneId) return null;
+      return _TmuxNode.split(axis, [
+        _TmuxNode.pane(pane),
+        _TmuxNode.pane(newPane),
+      ]);
+    }
+    for (var i = 0; i < children.length; i++) {
+      final child = children[i];
+      final next = child.splitPane(targetPaneId, axis, newPane);
+      if (next == null) continue;
+      final updated = [...children];
+      updated[i] = next;
+      return _TmuxNode.split(splitAxis!, updated);
+    }
+    return null;
+  }
+
+  _TmuxNode? removePane(String targetPaneId) {
+    final pane = this.pane;
+    if (pane != null) return pane.id == targetPaneId ? null : this;
+    final kept = <_TmuxNode>[];
+    for (final child in children) {
+      final next = child.removePane(targetPaneId);
+      if (next != null) kept.add(next);
+    }
+    if (kept.isEmpty) return null;
+    if (kept.length == 1) return kept.first;
+    return _TmuxNode.split(splitAxis!, kept);
+  }
+
+  Map<String, Object?> toJson() {
+    final pane = this.pane;
+    if (pane != null) {
+      return {'type': 'pane', 'pane': pane.toJson()};
+    }
+    return {
+      'type': 'split',
+      'axis': splitAxis == Axis.vertical ? 'vertical' : 'horizontal',
+      'children':
+          children.map((child) => child.toJson()).toList(growable: false),
+    };
   }
 }
 
@@ -2373,6 +2679,14 @@ class _TmuxPane {
   final String id;
   final String? paperId;
   String get label => id.replaceFirst('p_', '');
+
+  static _TmuxPane? fromJson(Map<dynamic, dynamic> map) {
+    final id = map['id']?.toString();
+    if (id == null) return null;
+    return _TmuxPane(id: id, paperId: map['paperId']?.toString());
+  }
+
+  Map<String, Object?> toJson() => {'id': id, 'paperId': paperId};
 }
 
 class _TmuxChooserEntry {
@@ -2702,6 +3016,12 @@ String _paperTitle(Paper? paper) {
   return receipt.draft.trim().isEmpty
       ? 'untitled receipt'
       : receipt.draft.trim();
+}
+
+int _intFromJson(Object? value, int fallback) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  return int.tryParse(value?.toString() ?? '') ?? fallback;
 }
 
 class ConfettiBurst extends StatefulWidget {

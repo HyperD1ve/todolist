@@ -174,6 +174,10 @@ class PaperRepository {
     return selected;
   }
 
+  Future<String?> loadSetting(String key) => _setting(key);
+
+  Future<void> saveSetting(String key, String value) => _setSetting(key, value);
+
   Future<void> syncNow() async {
     if (_syncing) return;
     _syncing = true;
@@ -303,9 +307,12 @@ class PaperRepository {
               whereArgs: [paper.id],
               limit: 1,
             );
-            final localUpdated = local.isEmpty ? 0 : _intValue(local.first['updated_at'], 0);
-            final localDeleted = local.isEmpty ? 0 : _intValue(local.first['deleted_at'], 0);
-            if (paper.updatedAt > localUpdated && paper.updatedAt > localDeleted) {
+            final localUpdated =
+                local.isEmpty ? 0 : _intValue(local.first['updated_at'], 0);
+            final localDeleted =
+                local.isEmpty ? 0 : _intValue(local.first['deleted_at'], 0);
+            if (paper.updatedAt > localUpdated &&
+                paper.updatedAt > localDeleted) {
               await txn.insert(
                 'papers',
                 {
@@ -335,7 +342,9 @@ class PaperRepository {
 
   Database _requireDb() {
     final db = _db;
-    if (db == null) throw StateError('PaperRepository.init must complete first.');
+    if (db == null) {
+      throw StateError('PaperRepository.init must complete first.');
+    }
     return db;
   }
 

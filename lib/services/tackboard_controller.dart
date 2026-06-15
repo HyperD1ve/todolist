@@ -17,6 +17,7 @@ class TackboardController extends ChangeNotifier {
   List<Paper> _papers = const <Paper>[];
   bool _loaded = false;
   String? _editingId;
+  String? _tmuxLayoutJson;
   int _zCounter = 1;
 
   List<Paper> get papers => _papers;
@@ -24,6 +25,7 @@ class TackboardController extends ChangeNotifier {
   String? get editingId => _editingId;
   String get syncDirectory => _repository.syncDirectory;
   String get deviceId => _repository.deviceId;
+  String? get tmuxLayoutJson => _tmuxLayoutJson;
 
   List<Paper> get onBoard =>
       _papers.where((paper) => !paper.crumpled).toList(growable: false);
@@ -41,6 +43,7 @@ class TackboardController extends ChangeNotifier {
 
   Future<void> reload() async {
     _papers = await _repository.loadPapers();
+    _tmuxLayoutJson = await _repository.loadSetting('tmux_layout');
     _syncZCounter();
     _loaded = true;
     notifyListeners();
@@ -49,6 +52,7 @@ class TackboardController extends ChangeNotifier {
   Future<void> syncNow() async {
     await _repository.syncNow();
     _papers = await _repository.loadPapers();
+    _tmuxLayoutJson = await _repository.loadSetting('tmux_layout');
     _syncZCounter();
     notifyListeners();
   }
@@ -57,6 +61,7 @@ class TackboardController extends ChangeNotifier {
     final selected = await _repository.pickSyncDirectory();
     if (selected != null) {
       _papers = await _repository.loadPapers();
+      _tmuxLayoutJson = await _repository.loadSetting('tmux_layout');
       _syncZCounter();
       notifyListeners();
     }
@@ -85,6 +90,12 @@ class TackboardController extends ChangeNotifier {
   }
 
   Future<ReceiptPaper> createReceipt(Size boardSize) async {
+    final receipt = makeReceipt(boardSize);
+    await addPaper(receipt);
+    return receipt;
+  }
+
+  ReceiptPaper makeReceipt(Size boardSize) {
     final boardWidth = boardSize.width <= 0 ? 1280.0 : boardSize.width;
     final spread = max(1.0, boardWidth - 360);
     final x = (120 + _random.nextDouble() * spread)
@@ -95,7 +106,6 @@ class TackboardController extends ChangeNotifier {
       y: 70 + _random.nextDouble() * 60,
       z: ++_zCounter,
     );
-    await addPaper(receipt);
     return receipt;
   }
 
@@ -156,6 +166,12 @@ class TackboardController extends ChangeNotifier {
     _papers = _papers.where((paper) => !paper.crumpled).toList(growable: false);
     notifyListeners();
     await _repository.deletePapers(ids);
+  }
+
+  Future<void> saveTmuxLayout(String json) async {
+    if (_tmuxLayoutJson == json) return;
+    _tmuxLayoutJson = json;
+    await _repository.saveSetting('tmux_layout', json);
   }
 
   void _syncZCounter() {
