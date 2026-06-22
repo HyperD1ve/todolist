@@ -2887,14 +2887,19 @@ class _TmuxReceiptPane extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final receipt = this.receipt;
+    final pinned = receipt?.pinned ?? false;
     return GestureDetector(
       onTap: onTap,
       child: Container(
         decoration: BoxDecoration(
           color: active ? const Color(0xff0d160d) : const Color(0xff080d08),
           border: Border.all(
-            color: active ? const Color(0xffd8ff78) : const Color(0xff315931),
-            width: active ? 2 : 1,
+            color: pinned
+                ? const Color(0xffff4d4d)
+                : active
+                    ? const Color(0xffd8ff78)
+                    : const Color(0xff315931),
+            width: pinned ? 3 : (active ? 2 : 1),
           ),
         ),
         child: Column(

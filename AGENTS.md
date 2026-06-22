@@ -105,6 +105,8 @@ click/tap plays a paper-unroll animation before spawning an editable receipt.
 - Desktop should expose the full tackboard experience. Narrow/mobile layouts
   should prioritize pinned receipts and red memos, matching the current shipped
   behavior.
+- In tmux view, pinned receipts stay in their normal windows and panes; indicate
+  importance with a red pane outline instead of moving them to a special window.
 - Use the existing raster assets rather than replacing the skeuomorphic look.
 
 ## Deferred / not yet built

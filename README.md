@@ -91,6 +91,7 @@ The alternate view treats the whole app as a tmux session.
 - `C-b d` returns to the tackboard view.
 - There are two baseline windows: `text` and `trash`.
 - A pane is a view into one receipt/list.
+- Pinned receipt panes stay in their normal windows and are outlined in red.
 - Creating a pane creates a new empty receipt-backed list.
 - Creating a window creates a new receipt-backed list in its own window.
 - Receipts created on the tackboard since the last tmux session open together
