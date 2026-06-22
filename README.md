@@ -32,7 +32,8 @@ Use the matching Flutter target for Windows or iOS.
 - The default sync directory is inside the app documents area so the app works
   before SyncThing is configured.
 - Tmux window and pane layout is stored locally in SQLite settings as
-  `tmux_layout`. It is not currently exported through the SyncThing JSON state.
+  `tmux_layout`. Receipt records also carry `tmuxWindowId`, so receipts created
+  on the tackboard between tmux sessions open together in a new tmux window.
 
 ## Tackboard View
 
@@ -55,10 +56,13 @@ Receipts are append-only permanent-ink lists.
 - Click the receipt printer to unroll and create a new receipt.
 - Type in edit mode to build the current draft line.
 - `Enter` commits the draft as a list item.
+- `Shift+Enter` on the first row commits the draft as the list title.
 - `Tab` commits the draft as a sub-list title and indents following items.
 - `Shift+Tab` outdents one level.
 - `Backspace` and `Delete` are disabled.
-- Click an existing item in edit mode to permanently strike it through.
+- Click an existing non-title item in edit mode to permanently strike it
+  through. Titles strike themselves when every item in their list/sub-list is
+  complete.
 
 ## Post-It Memos
 
@@ -89,6 +93,8 @@ The alternate view treats the whole app as a tmux session.
 - A pane is a view into one receipt/list.
 - Creating a pane creates a new empty receipt-backed list.
 - Creating a window creates a new receipt-backed list in its own window.
+- Receipts created on the tackboard since the last tmux session open together
+  in a brand-new tmux window.
 - Post-it memo text scrolls across the top as an alert ticker.
 - The tmux layout is persisted in local SQLite.
 
@@ -105,11 +111,13 @@ The alternate view treats the whole app as a tmux session.
 - `C-b p`: previous window.
 - `C-b o`: next pane.
 - `C-b` plus arrow keys: move pane focus.
+- `C-b Space`: clear the selected list item.
 - `C-b ?`: show tmux help.
 
 Inside a receipt pane:
 
 - Type to append to the draft line.
+- Up and Down arrows move the selected list item.
 - `Enter` commits an item.
 - `Tab` commits a sub-list title and indents.
 - `Shift+Tab` outdents.

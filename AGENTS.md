@@ -37,9 +37,10 @@ memos (free text + doodles) are the lighter-weight counterpart.
 
 `Paper = Receipt | Memo`, discriminated by `kind`. Shared fields: `id, x, y, z,
 pinned, crumpled, balled, ball, createdAt, updatedAt`. Receipts add list
-`items` (append-only, `struck` flag), `draft`/`draftLevel`, `bg`+`bgScale`/
-`bgX`/`bgY` (a randomized crop/zoom of crumpled1/crumpled2 so each looks
-unique without distorting the grain). Memos add `color`, `size`, `text`,
+`items` (append-only, `struck` flag; title rows may be `titleKind: list` or
+`titleKind: sublist`), `draft`/`draftLevel`, `tmuxWindowId`, and `bg`+
+`bgScale`/`bgX`/`bgY` (a randomized crop/zoom of crumpled1/crumpled2 so each
+looks unique without distorting the grain). Memos add `color`, `size`, `text`,
 `strokes` (doodles).
 
 SQLite should keep enough metadata to merge JSON files safely. If the `Paper`
@@ -68,11 +69,15 @@ exports and SQLite rows survive schema changes.
 Append-only "permanent ink" list editor, Courier-style monospace:
 
 - **Enter** commits the typed text as a list item.
+- **Shift+Enter** on the first row commits the typed text as the top-level list
+  title without indenting following items.
 - **Tab** turns the typed text into a sub-list *title* and indents following
   items; it is a no-op if there is no typed text.
 - **Shift+Tab** outdents one level.
 - **Backspace/Delete are disabled** entirely.
-- Clicking/tapping an existing item **strikes it through** permanently.
+- Clicking/tapping an existing non-title item **strikes it through**
+  permanently. Title rows are not directly interactive; they strike themselves
+  when every non-title item in their list/sub-list is struck.
 
 ### Memos
 

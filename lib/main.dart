@@ -790,7 +790,7 @@ class _ReceiptViewState extends State<ReceiptView> {
                   const Padding(
                     padding: EdgeInsets.only(top: 6),
                     child: Text(
-                      'type... Enter = item · Tab = sub-list · click an item to cross it off · no deleting',
+                      'type... Enter = item · Shift+Enter = title · Tab = sub-list · no deleting',
                       style: TextStyle(fontSize: 12, color: Color(0x88222222)),
                     ),
                   ),
@@ -813,6 +813,10 @@ class _ReceiptViewState extends State<ReceiptView> {
     }
     if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter) {
+      if (HardwareKeyboard.instance.isShiftPressed) {
+        _commitListTitle();
+        return KeyEventResult.handled;
+      }
       _commitDraft();
       return KeyEventResult.handled;
     }
@@ -831,7 +835,8 @@ class _ReceiptViewState extends State<ReceiptView> {
                     text: text,
                     level: widget.receipt.draftLevel,
                     isTitle: true,
-                    struck: false),
+                    struck: false,
+                    titleKind: 'sublist'),
               ],
               draft: '',
               draftLevel: widget.receipt.draftLevel + 1,
@@ -876,9 +881,31 @@ class _ReceiptViewState extends State<ReceiptView> {
     );
   }
 
+  void _commitListTitle() {
+    if (widget.receipt.items.isNotEmpty || widget.receipt.draftLevel != 0) {
+      return;
+    }
+    final text = widget.receipt.draft.trim();
+    if (text.isEmpty) return;
+    widget.onChanged(
+      widget.receipt.copyWith(
+        items: [
+          ListItem(
+            text: text,
+            level: 0,
+            isTitle: true,
+            struck: false,
+            titleKind: 'list',
+          ),
+        ],
+        draft: '',
+      ),
+    );
+  }
+
   void _strike(int index) {
     final item = widget.receipt.items[index];
-    if (item.struck) return;
+    if (item.isTitle || item.struck) return;
     final items = [...widget.receipt.items];
     items[index] = item.copyWith(struck: true);
     widget.onChanged(widget.receipt.copyWith(items: items));
@@ -1720,12 +1747,22 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
         onTap: () {
           setState(() {
             window.activePaneId = pane.id;
+            _ensureSelectableItem(pane, _receiptFor(pane.paperId));
             message = 'pane ${pane.label}';
           });
           _persistLayout();
           focusNode.requestFocus();
         },
         onStrike: (receipt, index) => _strikeItem(receipt, index),
+        onSelectItem: (index) {
+          setState(() {
+            pane.selectedItemIndex = index;
+            window.activePaneId = pane.id;
+            message = 'item ${index + 1}';
+          });
+          _persistLayout();
+          focusNode.requestFocus();
+        },
       );
     }
     final children = [
@@ -1865,6 +1902,8 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
       'C-b , rename window',
       'C-b n / p next / previous',
       'C-b arrows select pane',
+      'Up / Down select list item',
+      'C-b Space clears selected item',
       'Enter commits typed text',
       'Tab makes a sub-list title',
     ];
@@ -2018,6 +2057,8 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
     } else if (key == LogicalKeyboardKey.arrowLeft ||
         key == LogicalKeyboardKey.arrowUp) {
       _selectPane(-1);
+    } else if (key == LogicalKeyboardKey.space) {
+      _clearSelectedReceiptItem();
     } else if (_matchesQuestion(event)) {
       setState(() => helpOpen = true);
     } else {
@@ -2050,6 +2091,14 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
     final key = event.logicalKey;
     if (key == LogicalKeyboardKey.backspace ||
         key == LogicalKeyboardKey.delete) {
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown) {
+      _selectReceiptItem(1);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowUp) {
+      _selectReceiptItem(-1);
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.enter ||
@@ -2087,20 +2136,32 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
     var changed = false;
     final liveIds = receipts.map((paper) => paper.id).toSet();
     if (windows.isEmpty) {
-      final textWindow = _TmuxWindow(
-        id: 'w_text',
-        name: 'text',
-        panes: [
-          for (final receipt in receipts)
-            _TmuxPane(id: _nextPaneId(), paperId: receipt.id),
-        ],
-      );
-      windows.add(textWindow);
+      final grouped = _receiptsByWindow(receipts);
+      if (grouped.isEmpty) {
+        windows.add(_TmuxWindow(id: 'w_text', name: 'text'));
+      } else {
+        for (final entry in grouped.entries) {
+          windows.add(
+            _TmuxWindow(
+              id: entry.key,
+              name: _windowNameForId(entry.key),
+              panes: [
+                for (final receipt in entry.value)
+                  _TmuxPane(id: _nextPaneId(), paperId: receipt.id),
+              ],
+            ),
+          );
+        }
+      }
       windows.add(_TmuxWindow(id: 'w_trash', name: 'trash', trash: true));
       changed = true;
     }
 
     for (final window in windows.where((window) => !window.trash)) {
+      for (final pane in window.panes) {
+        _tagReceiptWindow(pane.paperId, window.id);
+        _ensureSelectableItem(pane, _receiptFor(pane.paperId));
+      }
       final before = window.panes.length;
       final stalePanes = window.panes
           .where(
@@ -2130,16 +2191,13 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
         .where((receipt) => !panePaperIds.contains(receipt.id))
         .toList(growable: false);
     if (missing.isNotEmpty) {
-      final target = windows.firstWhere(
-        (window) => !window.trash,
-        orElse: () {
-          final created = _TmuxWindow(id: 'w_text', name: 'text');
-          windows.insert(0, created);
-          return created;
-        },
-      );
-      for (final receipt in missing) {
-        target.addPane(_TmuxPane(id: _nextPaneId(), paperId: receipt.id));
+      final grouped = _receiptsByWindow(missing);
+      for (final entry in grouped.entries) {
+        final target = _windowForReceiptGroup(entry.key);
+        for (final receipt in entry.value) {
+          target.addPane(_TmuxPane(id: _nextPaneId(), paperId: receipt.id));
+          _tagReceiptWindow(receipt.id, target.id);
+        }
       }
       changed = true;
     }
@@ -2169,15 +2227,18 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
       currentWindow = nextCurrent;
       changed = true;
     }
+    unawaited(widget.controller.clearPendingTackboardTmuxWindow());
     if (changed) _persistLayout();
   }
 
   Future<void> _newWindow() async {
-    final receipt = widget.controller.makeReceipt(widget.boardSize);
+    final serial = windowSerial++;
+    final windowId = 'w_$serial';
+    final receipt =
+        widget.controller.makeReceipt(widget.boardSize, tmuxWindowId: windowId);
     setState(() {
-      final serial = windowSerial++;
       final window = _TmuxWindow(
-        id: 'w_$serial',
+        id: windowId,
         name: 'text-$serial',
         panes: [_TmuxPane(id: _nextPaneId(), paperId: receipt.id)],
       );
@@ -2196,7 +2257,8 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
       setState(() => message = 'cannot split trash');
       return;
     }
-    final receipt = widget.controller.makeReceipt(widget.boardSize);
+    final receipt = widget.controller
+        .makeReceipt(widget.boardSize, tmuxWindowId: window.id);
     setState(() {
       final pane = _TmuxPane(id: _nextPaneId(), paperId: receipt.id);
       window.splitActivePane(axis, pane);
@@ -2320,6 +2382,43 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
     _persistLayout();
   }
 
+  Map<String, List<ReceiptPaper>> _receiptsByWindow(List<ReceiptPaper> source) {
+    final groups = <String, List<ReceiptPaper>>{};
+    for (final receipt in source) {
+      final id = receipt.tmuxWindowId;
+      final windowId = id == null || id.isEmpty ? 'w_text' : id;
+      groups.putIfAbsent(windowId, () => <ReceiptPaper>[]).add(receipt);
+    }
+    return groups;
+  }
+
+  _TmuxWindow _windowForReceiptGroup(String windowId) {
+    for (final window in windows) {
+      if (!window.trash && window.id == windowId) return window;
+    }
+    final window = _TmuxWindow(id: windowId, name: _windowNameForId(windowId));
+    windows.insert(max(0, windows.length - (_hasTrashWindow ? 1 : 0)), window);
+    return window;
+  }
+
+  void _tagReceiptWindow(String? paperId, String windowId) {
+    final receipt = _receiptFor(paperId);
+    if (receipt == null || receipt.tmuxWindowId == windowId) return;
+    unawaited(
+      widget.controller.updatePaper(
+        receipt.id,
+        (_) => receipt.copyWith(tmuxWindowId: windowId),
+      ),
+    );
+  }
+
+  String _windowNameForId(String id) {
+    if (id == 'w_text') return 'text';
+    final numeric = RegExp(r'^w_(\d+)$').firstMatch(id);
+    if (numeric != null) return 'text-${numeric.group(1)}';
+    return 'text-${windowSerial++}';
+  }
+
   void _commitReceiptDraft(ReceiptPaper receipt) {
     final text = receipt.draft.trim();
     if (text.isEmpty) return;
@@ -2351,7 +2450,8 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
               text: text,
               level: receipt.draftLevel,
               isTitle: true,
-              struck: false),
+              struck: false,
+              titleKind: 'sublist'),
         ],
         draft: '',
         draftLevel: receipt.draftLevel + 1,
@@ -2362,10 +2462,66 @@ class _TmuxSessionViewState extends State<TmuxSessionView> {
   void _strikeItem(ReceiptPaper receipt, int index) {
     if (index < 0 || index >= receipt.items.length) return;
     final item = receipt.items[index];
-    if (item.struck) return;
+    if (item.isTitle || item.struck) return;
     final items = [...receipt.items];
     items[index] = item.copyWith(struck: true);
     _changeReceipt(receipt, receipt.copyWith(items: items));
+  }
+
+  void _selectReceiptItem(int delta) {
+    final window = activeWindow;
+    if (window.trash) return;
+    final pane = window.activePane;
+    final receipt = _receiptFor(pane?.paperId);
+    if (pane == null || receipt == null) return;
+    final selectable = _selectableItemIndexes(receipt);
+    if (selectable.isEmpty) {
+      setState(() => message = 'no clearable items');
+      return;
+    }
+    final current = selectable.contains(pane.selectedItemIndex)
+        ? selectable.indexOf(pane.selectedItemIndex)
+        : 0;
+    final next = (current + delta) % selectable.length;
+    setState(() {
+      pane.selectedItemIndex =
+          selectable[next < 0 ? selectable.length - 1 : next];
+      message = 'item ${pane.selectedItemIndex + 1}';
+    });
+    _persistLayout();
+  }
+
+  void _clearSelectedReceiptItem() {
+    final window = activeWindow;
+    if (window.trash) return;
+    final pane = window.activePane;
+    final receipt = _receiptFor(pane?.paperId);
+    if (pane == null || receipt == null) return;
+    final selected = _ensureSelectableItem(pane, receipt);
+    if (selected == null) {
+      setState(() => message = 'no clearable items');
+      return;
+    }
+    _strikeItem(receipt, selected);
+    setState(() => message = 'cleared item ${selected + 1}');
+    _persistLayout();
+  }
+
+  int? _ensureSelectableItem(_TmuxPane pane, ReceiptPaper? receipt) {
+    if (receipt == null) return null;
+    final selectable = _selectableItemIndexes(receipt);
+    if (selectable.isEmpty) return null;
+    if (!selectable.contains(pane.selectedItemIndex)) {
+      pane.selectedItemIndex = selectable.first;
+    }
+    return pane.selectedItemIndex;
+  }
+
+  List<int> _selectableItemIndexes(ReceiptPaper receipt) {
+    return [
+      for (var i = 0; i < receipt.items.length; i++)
+        if (!receipt.items[i].isTitle) i,
+    ];
   }
 
   void _changeReceipt(ReceiptPaper receipt, ReceiptPaper next) {
@@ -2674,19 +2830,32 @@ class _TmuxNode {
 }
 
 class _TmuxPane {
-  const _TmuxPane({required this.id, required this.paperId});
+  _TmuxPane({
+    required this.id,
+    required this.paperId,
+    this.selectedItemIndex = 0,
+  });
 
   final String id;
   final String? paperId;
+  int selectedItemIndex;
   String get label => id.replaceFirst('p_', '');
 
   static _TmuxPane? fromJson(Map<dynamic, dynamic> map) {
     final id = map['id']?.toString();
     if (id == null) return null;
-    return _TmuxPane(id: id, paperId: map['paperId']?.toString());
+    return _TmuxPane(
+      id: id,
+      paperId: map['paperId']?.toString(),
+      selectedItemIndex: _intFromJson(map['selectedItemIndex'], 0),
+    );
   }
 
-  Map<String, Object?> toJson() => {'id': id, 'paperId': paperId};
+  Map<String, Object?> toJson() => {
+        'id': id,
+        'paperId': paperId,
+        'selectedItemIndex': selectedItemIndex,
+      };
 }
 
 class _TmuxChooserEntry {
@@ -2705,6 +2874,7 @@ class _TmuxReceiptPane extends StatelessWidget {
     required this.active,
     required this.onTap,
     required this.onStrike,
+    required this.onSelectItem,
   });
 
   final _TmuxPane pane;
@@ -2712,6 +2882,7 @@ class _TmuxReceiptPane extends StatelessWidget {
   final bool active;
   final VoidCallback onTap;
   final void Function(ReceiptPaper receipt, int index) onStrike;
+  final ValueChanged<int> onSelectItem;
 
   @override
   Widget build(BuildContext context) {
@@ -2753,10 +2924,24 @@ class _TmuxReceiptPane extends StatelessWidget {
                       children: [
                         for (var i = 0; i < receipt.items.length; i++)
                           GestureDetector(
-                            onTap: () => onStrike(receipt, i),
-                            child: Padding(
+                            onTap: receipt.items[i].isTitle
+                                ? null
+                                : () {
+                                    onSelectItem(i);
+                                    onStrike(receipt, i);
+                                  },
+                            child: Container(
+                              color: active &&
+                                      !receipt.items[i].isTitle &&
+                                      pane.selectedItemIndex == i
+                                  ? const Color(0xff1d351d)
+                                  : Colors.transparent,
                               padding: EdgeInsets.only(
-                                  left: receipt.items[i].level * 18, bottom: 4),
+                                left: receipt.items[i].level * 18,
+                                right: 6,
+                                top: 1,
+                                bottom: 5,
+                              ),
                               child: Text(
                                 receipt.items[i].isTitle
                                     ? receipt.items[i].text

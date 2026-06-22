@@ -18,6 +18,7 @@ class TackboardController extends ChangeNotifier {
   bool _loaded = false;
   String? _editingId;
   String? _tmuxLayoutJson;
+  String? _pendingTackboardTmuxWindowId;
   int _zCounter = 1;
 
   List<Paper> get papers => _papers;
@@ -44,6 +45,8 @@ class TackboardController extends ChangeNotifier {
   Future<void> reload() async {
     _papers = await _repository.loadPapers();
     _tmuxLayoutJson = await _repository.loadSetting('tmux_layout');
+    _pendingTackboardTmuxWindowId =
+        await _repository.loadSetting('tmux_pending_window_id');
     _syncZCounter();
     _loaded = true;
     notifyListeners();
@@ -53,6 +56,8 @@ class TackboardController extends ChangeNotifier {
     await _repository.syncNow();
     _papers = await _repository.loadPapers();
     _tmuxLayoutJson = await _repository.loadSetting('tmux_layout');
+    _pendingTackboardTmuxWindowId =
+        await _repository.loadSetting('tmux_pending_window_id');
     _syncZCounter();
     notifyListeners();
   }
@@ -62,6 +67,8 @@ class TackboardController extends ChangeNotifier {
     if (selected != null) {
       _papers = await _repository.loadPapers();
       _tmuxLayoutJson = await _repository.loadSetting('tmux_layout');
+      _pendingTackboardTmuxWindowId =
+          await _repository.loadSetting('tmux_pending_window_id');
       _syncZCounter();
       notifyListeners();
     }
@@ -90,12 +97,13 @@ class TackboardController extends ChangeNotifier {
   }
 
   Future<ReceiptPaper> createReceipt(Size boardSize) async {
-    final receipt = makeReceipt(boardSize);
+    final windowId = await _pendingTackboardWindowId();
+    final receipt = makeReceipt(boardSize, tmuxWindowId: windowId);
     await addPaper(receipt);
     return receipt;
   }
 
-  ReceiptPaper makeReceipt(Size boardSize) {
+  ReceiptPaper makeReceipt(Size boardSize, {String? tmuxWindowId}) {
     final boardWidth = boardSize.width <= 0 ? 1280.0 : boardSize.width;
     final spread = max(1.0, boardWidth - 360);
     final x = (120 + _random.nextDouble() * spread)
@@ -105,6 +113,7 @@ class TackboardController extends ChangeNotifier {
       x: x,
       y: 70 + _random.nextDouble() * 60,
       z: ++_zCounter,
+      tmuxWindowId: tmuxWindowId,
     );
     return receipt;
   }
@@ -172,6 +181,21 @@ class TackboardController extends ChangeNotifier {
     if (_tmuxLayoutJson == json) return;
     _tmuxLayoutJson = json;
     await _repository.saveSetting('tmux_layout', json);
+  }
+
+  Future<void> clearPendingTackboardTmuxWindow() async {
+    if (_pendingTackboardTmuxWindowId == null) return;
+    _pendingTackboardTmuxWindowId = null;
+    await _repository.deleteSetting('tmux_pending_window_id');
+  }
+
+  Future<String> _pendingTackboardWindowId() async {
+    final existing = _pendingTackboardTmuxWindowId;
+    if (existing != null && existing.isNotEmpty) return existing;
+    final id = 'w_board_${DateTime.now().microsecondsSinceEpoch}';
+    _pendingTackboardTmuxWindowId = id;
+    await _repository.saveSetting('tmux_pending_window_id', id);
+    return id;
   }
 
   void _syncZCounter() {

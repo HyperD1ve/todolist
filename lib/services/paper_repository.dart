@@ -178,6 +178,14 @@ class PaperRepository {
 
   Future<void> saveSetting(String key, String value) => _setSetting(key, value);
 
+  Future<void> deleteSetting(String key) async {
+    await _requireDb().delete(
+      'settings',
+      where: 'key = ?',
+      whereArgs: [key],
+    );
+  }
+
   Future<void> syncNow() async {
     if (_syncing) return;
     _syncing = true;

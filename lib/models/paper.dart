@@ -36,34 +36,43 @@ class ListItem {
     required this.level,
     required this.isTitle,
     required this.struck,
+    this.titleKind,
   });
 
   final String text;
   final int level;
   final bool isTitle;
   final bool struck;
+  final String? titleKind;
 
   ListItem copyWith({
     String? text,
     int? level,
     bool? isTitle,
     bool? struck,
+    String? titleKind,
   }) {
     return ListItem(
       text: text ?? this.text,
       level: level ?? this.level,
       isTitle: isTitle ?? this.isTitle,
       struck: struck ?? this.struck,
+      titleKind: titleKind ?? this.titleKind,
     );
   }
 
   factory ListItem.fromJson(Object? value) {
     final map = value is Map ? value : const <String, Object?>{};
+    final isTitle = map['isTitle'] == true;
     return ListItem(
       text: map['text']?.toString() ?? '',
       level: _intValue(map['level'], 0),
-      isTitle: map['isTitle'] == true,
+      isTitle: isTitle,
       struck: map['struck'] == true,
+      titleKind: isTitle
+          ? _stringChoice(
+              map['titleKind'], const ['list', 'sublist'], 'sublist')
+          : null,
     );
   }
 
@@ -73,8 +82,48 @@ class ListItem {
       'level': level,
       'isTitle': isTitle,
       'struck': struck,
+      if (isTitle && titleKind != null) 'titleKind': titleKind,
     };
   }
+}
+
+List<ListItem> normalizeListCompletion(List<ListItem> items) {
+  var changed = false;
+  final next = [...items];
+  for (var i = 0; i < items.length; i++) {
+    final item = items[i];
+    if (!item.isTitle) continue;
+    final descendants = _titleDescendantIndexes(items, i)
+        .where((index) => !items[index].isTitle)
+        .toList(growable: false);
+    final struck = descendants.isNotEmpty &&
+        descendants.every((index) => items[index].struck);
+    if (item.struck != struck) {
+      next[i] = item.copyWith(struck: struck);
+      changed = true;
+    }
+  }
+  return changed ? next : items;
+}
+
+List<int> _titleDescendantIndexes(List<ListItem> items, int titleIndex) {
+  final title = items[titleIndex];
+  final indexes = <int>[];
+  for (var i = titleIndex + 1; i < items.length; i++) {
+    final item = items[i];
+    if (title.titleKind == 'list') {
+      if (item.isTitle &&
+          item.titleKind == 'list' &&
+          item.level <= title.level) {
+        break;
+      }
+      indexes.add(i);
+      continue;
+    }
+    if (item.level <= title.level) break;
+    indexes.add(i);
+  }
+  return indexes;
 }
 
 class StrokePoint {
@@ -193,6 +242,7 @@ class ReceiptPaper extends Paper {
     required this.items,
     required this.draft,
     required this.draftLevel,
+    this.tmuxWindowId,
   });
 
   final String bg;
@@ -203,8 +253,14 @@ class ReceiptPaper extends Paper {
   final List<ListItem> items;
   final String draft;
   final int draftLevel;
+  final String? tmuxWindowId;
 
-  factory ReceiptPaper.create({required double x, required double y, required int z}) {
+  factory ReceiptPaper.create({
+    required double x,
+    required double y,
+    required int z,
+    String? tmuxWindowId,
+  }) {
     final now = DateTime.now().millisecondsSinceEpoch;
     final random = Random();
     return ReceiptPaper(
@@ -227,6 +283,7 @@ class ReceiptPaper extends Paper {
       items: const <ListItem>[],
       draft: '',
       draftLevel: 0,
+      tmuxWindowId: tmuxWindowId,
     );
   }
 
@@ -250,10 +307,13 @@ class ReceiptPaper extends Paper {
       bgY: _doubleValue(map['bgY'], 50),
       height: _doubleValue(map['height'], 400),
       items: rawItems is List
-          ? rawItems.map(ListItem.fromJson).toList(growable: false)
+          ? normalizeListCompletion(
+              rawItems.map(ListItem.fromJson).toList(growable: false),
+            )
           : const <ListItem>[],
       draft: map['draft']?.toString() ?? '',
       draftLevel: _intValue(map['draftLevel'], 0),
+      tmuxWindowId: map['tmuxWindowId']?.toString(),
     );
   }
 
@@ -275,6 +335,7 @@ class ReceiptPaper extends Paper {
     List<ListItem>? items,
     String? draft,
     int? draftLevel,
+    String? tmuxWindowId,
   }) {
     return ReceiptPaper(
       id: id,
@@ -292,9 +353,10 @@ class ReceiptPaper extends Paper {
       bgX: bgX ?? this.bgX,
       bgY: bgY ?? this.bgY,
       height: height ?? this.height,
-      items: items ?? this.items,
+      items: items == null ? this.items : normalizeListCompletion(items),
       draft: draft ?? this.draft,
       draftLevel: draftLevel ?? this.draftLevel,
+      tmuxWindowId: tmuxWindowId ?? this.tmuxWindowId,
     );
   }
 
@@ -345,6 +407,7 @@ class ReceiptPaper extends Paper {
       'items': items.map((item) => item.toJson()).toList(growable: false),
       'draft': draft,
       'draftLevel': draftLevel,
+      if (tmuxWindowId != null) 'tmuxWindowId': tmuxWindowId,
       'createdAt': createdAt,
       'updatedAt': updatedAt,
     };
@@ -490,7 +553,8 @@ class MemoPaper extends Paper {
       'color': color,
       'size': size,
       'text': text,
-      'strokes': strokes.map((stroke) => stroke.toJson()).toList(growable: false),
+      'strokes':
+          strokes.map((stroke) => stroke.toJson()).toList(growable: false),
       'x': x,
       'y': y,
       'z': z,
